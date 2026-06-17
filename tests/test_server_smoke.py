@@ -27,10 +27,15 @@ def test_tools_register_on_server():
     tools = asyncio.run(server.mcp.list_tools())
     names = {t.name for t in tools}
     expected = {
-        "generate_cad", "verify_cad",
-        "comsol_health_check", "build_comsol_model", "validate_geometry",
-        "run_stub_length_sweep", "export_touchstone",
-        "run_abcd_fit", "fit_stub_sweep", "analyze_dispersion",
+        # CAD stage
+        "generate_cad", "verify_cad", "run_custom_cad",
+        # COMSOL stage
+        "comsol_health_check", "build_comsol_model", "run_custom_comsol_build",
+        "validate_geometry", "run_stub_length_sweep", "export_touchstone",
+        # Fitting stage
+        "run_abcd_fit", "run_abcd_fit_parallel", "run_generic_fit",
+        "fit_stub_sweep", "analyze_dispersion",
+        # Job management
         "get_job_status", "get_job_result", "list_jobs", "describe_config",
     }
     missing = expected - names
