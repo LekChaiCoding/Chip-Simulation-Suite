@@ -1,0 +1,49 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# COMSOL Simulation Suite — machine paths
+#
+# Copy this file to  config/paths.toml  and edit for your machine.
+# Everything here is OPTIONAL: if a key is omitted (or this file is absent),
+# the suite falls back to sensible defaults computed relative to the repo
+# location (it assumes the suite lives inside the "Chip Simulation" folder).
+#
+# Resolution order for every setting (first hit wins):
+#   1. environment variable   (e.g. COMSOL_HOST, CHIP_SIM_ROOT, JULIA_BIN)
+#   2. this file               (config/paths.toml)
+#   3. built-in default        (relative to the repo)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Absolute path to the top-level "Chip Simulation" folder that holds the
+# original pipeline scripts and data. Default: the parent of this repo.
+# chip_sim_root = "Z:/users/Alex/Chip Simulation"
+
+# COMSOL server hostname the build/sweep tools connect to (mph.Client).
+# Leave unset to run COMSOL locally, or point at your lab server.
+# comsol_host = "comsol-server.lab.example"
+
+# COMSOL server port (mph default is 2036).
+# comsol_port = 2036
+
+# Julia executable used for the (optional) Julia fitting + dispersion tools.
+# Default: "julia" (must be on PATH).
+# julia_bin = "C:/Users/alexw/AppData/Local/Programs/Julia-1.11.9/bin/julia.exe"
+
+# Python executable used to launch the wrapped pipeline scripts as subprocesses.
+# Default: the same interpreter running the MCP server (sys.executable).
+# python_bin = "C:/Users/alexw/Qiskit/python.exe"
+
+# ── Advanced: override individual source-script locations ────────────────────
+# Only needed if your layout differs from the standard repo. Paths may be
+# absolute or relative to chip_sim_root.
+[scripts]
+# cad_generator = "COMSOL Simulation/001/Scripts/converter_group_recreation.py"
+# cad_verifier  = "COMSOL Simulation/001/Scripts/cad_verify_gds.py"
+# comsol_build  = "COMSOL Simulation/001/Scripts/recreate_and_solve.py"
+# comsol_sweep  = "COMSOL Simulation/001/Scripts/sweep_stub_length.py"
+# comsol_export = "COMSOL Simulation/001/Scripts/export_touchstone.py"
+# abcd_fit      = "JosephsonCircuit/Fits/003_data/ABCD_Matrix/Scripts/abcd_fit.py"
+# julia_fit     = "JosephsonCircuit/Fits/003_data/Scripts/fit_stub_sweep.jl"
+# julia_disp    = "JosephsonCircuit/Fits/003_data/Scripts/dispersion_analysis.jl"
+
+[data]
+# reference_gds   = "gds/converter_group_recreation.gds"
+# bridge003_sweep = "JosephsonCircuit/bridge/003/stub_length_sweep.dat"

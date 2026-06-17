@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comsol-simulation-suite"
+version = "0.1.0"
+description = "MCP server that wraps the CAD -> COMSOL -> fitting chip-simulation pipeline so it can be driven from Claude Code."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Alex's Lab" }]
+license = { text = "Proprietary - internal lab use" }
+
+# Runtime dependencies.
+#   mcp     - the Model Context Protocol server SDK (FastMCP API)
+#   gdstk   - GDS read/write, needed by the CAD generation + verification step
+#   numpy   - used by the in-process CAD verification checks
+# Note: COMSOL access (the `mph` package + a COMSOL install/licence) and Julia
+# are OPTIONAL extras - they are only needed to actually *run* the COMSOL and
+# Julia stages, which the suite launches as external subprocesses. The MCP
+# server itself imports neither, so it starts fine without them.
+dependencies = [
+    "mcp>=1.2.0",
+    "gdstk>=0.9",
+    "numpy>=1.23",
+]
+
+[project.optional-dependencies]
+# Install with: pip install -e ".[comsol]"   (requires a COMSOL licence too)
+comsol = ["mph>=1.2"]
+# Developer / test tooling.
+dev = ["pytest>=7"]
+
+[project.scripts]
+# Lets lab mates launch the server as `comsol-suite` as well as
+# `python -m comsol_suite`.
+comsol-suite = "comsol_suite.server:main"
+
+[tool.setuptools]
+packages = ["comsol_suite", "comsol_suite.tools"]
+
+[tool.setuptools.package-data]
+comsol_suite = ["py.typed"]

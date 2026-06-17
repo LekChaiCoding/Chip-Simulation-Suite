@@ -1,0 +1,33 @@
+# ── Job outputs & run artifacts ──────────────────────────────────────────────
+# Every tool invocation writes here (logs, generated GDS, fit CSVs, figures).
+# These can be large and are reproducible, so they are never committed.
+runs/
+
+# ── Local machine config ─────────────────────────────────────────────────────
+# Each lab mate copies config/paths.example.toml -> config/paths.toml and edits
+# it for their machine; the personal copy stays out of git.
+config/paths.toml
+
+# ── Heavy / generated simulation data ────────────────────────────────────────
+*.mph
+*.gds
+*.s2p
+*.csv
+*.png
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# ── OS / editor ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
