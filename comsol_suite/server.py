@@ -279,6 +279,42 @@ def run_stub_length_sweep(
 
 
 @mcp.tool()
+def run_eigenfrequency_study(
+    mph_path: str,
+    n_modes: int = 5,
+    freq_start_ghz: float = 1.0,
+    freq_stop_ghz: float = 20.0,
+    comsol_host: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    comsol_cores: int = 4,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Find resonance frequencies and Q-factors via COMSOL eigenvalue solver.
+
+    Run this FIRST for any new device (~5 min) to locate resonances before
+    committing to a full frequency sweep (~30 min+).
+
+    Eigenvalue physics:
+      - f_resonance = Re(λ)           [GHz]
+      - Q_factor    = Re(λ) / (2·|Im(λ)|)
+      - loss_rate   = |Im(λ)| · 2π   [MHz]
+
+    - **mph_path**: built .mph with EMW physics + PEC boundaries.
+    - **n_modes**: number of eigenvalues to find (1–20, default 5).
+    - **freq_start_ghz** / **freq_stop_ghz**: eigenvalue search window [GHz].
+    - **comsol_cores**: solver threads (default 4).
+    - **dry_run**: True (default) = validate only; False = launch background job.
+
+    Returns ``{job_id, status}`` on real-run. Poll ``get_job_result`` for
+    ``{mph_paths, eigenfrequencies_csv}`` when the job finishes.
+    """
+    return comsol.run_eigenfrequency_study(
+        REGISTRY, mph_path, n_modes, freq_start_ghz, freq_stop_ghz,
+        comsol_host, output_dir, comsol_cores, dry_run, debug)
+
+
+@mcp.tool()
 def export_touchstone(csv_path: str, output_path: Optional[str] = None,
                       dry_run: bool = True, debug: bool = False) -> Dict[str, Any]:
     """Convert an extracted S-parameter CSV to a Touchstone ``.s2p`` file."""

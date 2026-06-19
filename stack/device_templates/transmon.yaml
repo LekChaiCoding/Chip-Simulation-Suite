@@ -1,0 +1,41 @@
+# Transmon Qubit — AI Simulation Stack design intent template
+# Fill every null field via the design_intake.md conversation.
+#
+# Uses run_custom_comsol_build for device-agnostic COMSOL modeling.
+# Eigenfrequency study extracts qubit frequency and anharmonicity.
+
+gdstk:
+  tolerance: 0.001
+
+target:
+  freq_ghz: null               # qubit frequency ω₀₁ / 2π, e.g. 5.0
+  anharmonicity_mhz: null      # ω₁₂ - ω₀₁, typically -200 to -300 MHz
+  T1_us: null                  # energy relaxation time target, e.g. 100
+  T2_us: null                  # dephasing time target (T2 ≤ 2T1)
+  readout_freq_ghz: null       # readout resonator frequency, e.g. 6.8
+  dispersive_shift_mhz: null   # chi, e.g. 0.5
+
+geometry:
+  substrate: null              # "Si" | "AlN" | "Sapphire"
+  metal: null                  # "Al" | "Nb" | "NbTiN"
+  qubit_type: null             # "cross" | "xmon" | "square"
+  pad_width_um: null           # transmon cross-pad width
+  pad_height_um: null          # transmon cross-pad height
+  junction_area_um2: null      # Josephson junction area (µm²)
+  junction_inductance_ph: null # Lj from junction area (pH) — null = compute from area
+  sub_thickness_um: 525        # wafer thickness
+  air_height_mm: 1             # air box height above chip
+
+comsol:
+  wafer_thickness_um: 525
+  freq_sweep_start_ghz: null
+  freq_sweep_stop_ghz: null
+  freq_sweep_points: 201
+
+studies_to_run: []
+# Recommended: ["eigenfrequency"] to find qubit and readout modes (~5 min)
+# then ["frequency_sweep"] around readout for S21 transmission map (~30 min)
+
+build_script: null
+# Absolute path to the transmon build script (run_custom_comsol_build).
+# Example: "/mnt/smb/HSS/users/Alex/Chip Simulation/COMSOL Simulation/transmon/build.py"

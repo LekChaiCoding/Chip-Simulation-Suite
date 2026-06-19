@@ -1,0 +1,44 @@
+# TWPA (Traveling-Wave Parametric Amplifier) — AI Simulation Stack template
+# Fill every null field via the design_intake.md conversation.
+#
+# This template wraps the existing JTWPA simulation pipeline:
+#   GDS → build_comsol_model → run_stub_length_sweep → run_abcd_fit
+# Julia fitting is optional; Python ABCD fit is the default.
+
+gdstk:
+  tolerance: 0.001
+
+target:
+  gain_db: null                # signal gain at operating point, e.g. 20
+  bandwidth_ghz: null          # 3-dB gain bandwidth, e.g. 3.0
+  signal_freq_ghz: null        # signal center frequency, e.g. 6.0
+  pump_freq_ghz: null          # pump frequency (usually 2× signal), e.g. 12.0
+  noise_temperature_k: null    # quantum noise temperature target, e.g. 0.3
+
+geometry:
+  substrate: null              # "Si" | "AlN" | "Sapphire"
+  metal: null                  # "Al" | "Nb" | "NbTiN"
+  n_cells: null                # number of unit cells, e.g. 2000
+  cell_length_um: null         # unit cell length in µm
+  line_width_um: null          # CPW center conductor width
+  gap_um: null                 # CPW gap
+  stub_length_range_um:        # range for stub-length parametric sweep
+    start: 300
+    stop: 400
+    step: 10
+  junction_inductance_ph: 280  # Josephson junction inductance (pH)
+
+comsol:
+  wafer_thickness_um: 300
+  freq_sweep_start_ghz: null
+  freq_sweep_stop_ghz: null
+  freq_sweep_points: null
+
+studies_to_run: []
+# TWPA-specific studies: ["stub_length_sweep"] → feeds directly into ABCD fit.
+# Optional eigenfrequency pre-check: ["eigenfrequency", "stub_length_sweep"]
+
+fitting:
+  use_julia: false             # true = Julia fitter (needs Julia env); false = Python ABCD
+  abcd_topologies: [1, 2, 3]  # topology indices to test (see abcd_fit.py)
+  abcd_objectives: 5           # number of fit objectives

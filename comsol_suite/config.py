@@ -59,6 +59,7 @@ _DEFAULT_SCRIPTS: Dict[str, str] = {
     "abcd_fit":      "JosephsonCircuit/Fits/003_data/ABCD_Matrix/Scripts/abcd_fit.py",
     "julia_fit":     "JosephsonCircuit/Fits/003_data/Scripts/fit_stub_sweep.jl",
     "julia_disp":    "JosephsonCircuit/Fits/003_data/Scripts/dispersion_analysis.jl",
+    "comsol_eigenfreq": "COMSOL Simulation Suite/scripts/eigenfrequency_analysis.py",
 }
 _DEFAULT_DATA: Dict[str, str] = {
     "reference_gds":   "gds/converter_group_recreation.gds",

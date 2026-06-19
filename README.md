@@ -29,12 +29,12 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | Stage | Tools | What it does |
 |-------|-------|-------------|
 | **CAD** | `generate_cad`, `verify_cad`, `run_custom_cad` | Generates GDS layouts; verifies geometry against the validated reference |
-| **COMSOL** | `build_comsol_model`, `run_custom_comsol_build`, `run_stub_length_sweep`, `validate_geometry`, `export_touchstone`, `comsol_health_check` | Builds EM models with adjustable geometry and material parameters; saves inspectable `.mph` files |
+| **COMSOL** | `build_comsol_model`, `run_custom_comsol_build`, `run_stub_length_sweep`, `run_eigenfrequency_study`, `validate_geometry`, `export_touchstone`, `comsol_health_check` | Builds EM models with adjustable geometry and material parameters; saves inspectable `.mph` files. `run_eigenfrequency_study` finds resonances + Q-factors in ~5 min (run this FIRST for any new device) |
 | **Fitting** | `run_abcd_fit`, `run_abcd_fit_parallel`, `run_generic_fit`, `fit_stub_sweep`, `analyze_dispersion` | Extracts lumped circuit parameters (Cg, Z0, Bloch dispersion Δk); parallel mode is ~5× faster |
 | **Jobs** | `get_job_status`, `get_job_result`, `list_jobs` | Monitors long-running background solves; survives server restarts |
 | **Config** | `describe_config`, `comsol_health_check` | Resolves all paths; probes COMSOL connectivity without solving |
 
-18 tools total — full reference in [`docs/TOOLS.md`](docs/TOOLS.md).
+19 tools total — full reference in [`docs/TOOLS.md`](docs/TOOLS.md).
 
 ---
 
@@ -49,7 +49,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | Julia + JosephsonCircuits.jl | Julia fitting tools | optional; Python fitting works without it |
 | Claude Code / Codex / Cursor / … | AI-driven workflow | any MCP-compatible client |
 
-The MCP server starts and all 18 tools register **without COMSOL or Julia
+The MCP server starts and all 19 tools register **without COMSOL or Julia
 installed**. COMSOL tools stay in `dry_run=True` (plan-only) mode until
 a live connection is available.
 

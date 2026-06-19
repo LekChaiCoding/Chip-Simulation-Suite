@@ -493,6 +493,120 @@ def run_stub_length_sweep(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Eigenfrequency study  (resonances + Q-factors without a frequency sweep)
+# ─────────────────────────────────────────────────────────────────────────────
+def run_eigenfrequency_study(
+    registry: JobRegistry,
+    mph_path: str,
+    n_modes: int = 5,
+    freq_start_ghz: float = 1.0,
+    freq_stop_ghz: float = 20.0,
+    comsol_host: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    comsol_cores: int = 4,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Find resonance frequencies and Q-factors via COMSOL eigenvalue solver.
+
+    Uses the eigenfrequency_analysis.py script to add an Eigenfrequency study
+    to an existing .mph, solve it, and extract complex eigenvalues:
+      f_resonance = Re(λ)           [GHz]
+      Q_factor    = Re(λ) / (2·|Im(λ)|)
+      loss_rate   = |Im(λ)| · 2π   [MHz]
+
+    Run this FIRST for any new device (~5 min) to locate resonances before
+    committing to a full frequency sweep (~30 min+).
+
+    Parameters
+    ----------
+    mph_path
+        Path to a built .mph (from build_comsol_model or run_custom_comsol_build).
+        Must have EMW physics with PEC boundaries.
+    n_modes
+        Number of eigenvalues to compute (1–20, default 5).
+    freq_start_ghz
+        Search window lower bound in GHz (default 1.0).
+    freq_stop_ghz
+        Search window upper bound in GHz (default 20.0).
+    comsol_cores
+        COMSOL solver threads (default 4).
+    dry_run
+        If True (default), validate + health-check only. Set False to launch.
+
+    Returns
+    -------
+    dict
+        *Dry-run*: ``{dry_run, would_run, patches_applied, mph_files_would_save,
+        comsol_health, ready}``
+        *Real-run*: ``{job_id, status}`` — poll ``get_job_result`` for
+        ``{mph_paths, output_files, eigenfrequencies_csv}``.
+    """
+    # Input validation BEFORE loading config (fast fail without hitting disk).
+    if not 1 <= n_modes <= 20:
+        return {"ok": False, "error": f"n_modes must be 1–20, got {n_modes}"}
+    if freq_start_ghz >= freq_stop_ghz:
+        return {"ok": False,
+                "error": f"freq_start_ghz ({freq_start_ghz}) must be < "
+                         f"freq_stop_ghz ({freq_stop_ghz})"}
+
+    cfg = load_config()
+    src = cfg.script("comsol_eigenfreq")
+    out = Path(output_dir) if output_dir else cfg.runs_dir / "comsol_eigenfreq"
+    csv_out = out / "eigenfrequencies.csv"
+
+    argv = [
+        cfg.python_bin, src,
+        "--modes", str(n_modes),
+        "--freq-start", str(freq_start_ghz),
+        "--freq-stop", str(freq_stop_ghz),
+        "--out", str(csv_out),
+        "--cores", str(comsol_cores),
+    ]
+    if debug:
+        argv.append("--debug")
+
+    # Patches redirect module-level path constants in the script copy.
+    patches_plan = {
+        r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+        r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+        r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+    }
+    mph_plan = [str(out / "eigenfrequency_result.mph")]
+
+    if dry_run:
+        return _preflight("run_eigenfrequency_study", argv, patches_plan,
+                          comsol_host, cfg.comsol_port, mph_plan)
+
+    def worker(job: Job) -> Dict[str, Any]:
+        out.mkdir(parents=True, exist_ok=True)
+        patched = patch_script(
+            src,
+            Path(job.run_dir) / "_eigenfreq_patched.py",
+            {
+                r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+                r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+                r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+                r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+            },
+        )
+        real_argv = [
+            cfg.python_bin, str(patched),
+            "--modes", str(n_modes),
+            "--freq-start", str(freq_start_ghz),
+            "--freq-stop", str(freq_stop_ghz),
+            "--out", str(csv_out),
+            "--cores", str(comsol_cores),
+        ]
+        if debug:
+            real_argv.append("--debug")
+        return _run_and_collect(real_argv, Path(job.log_path), out, debug, 3600)
+
+    job = registry.submit("run_eigenfrequency_study", worker, background=True)
+    return {"job_id": job.job_id, "status": job.status}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Generic COMSOL build  (user-supplied script for any device / study type)
 # ─────────────────────────────────────────────────────────────────────────────
 def run_custom_comsol_build(

@@ -1,0 +1,34 @@
+# Tunable Coupler — AI Simulation Stack design intent template
+# Fill every null field via the design_intake.md conversation.
+#
+# A tunable coupler mediates the interaction between two qubits.
+# The coupling strength g is tunable by threading magnetic flux through the coupler loop.
+# Key targets: bare frequency (flux-insensitive point), coupling g range, isolation.
+
+gdstk:
+  tolerance: 0.001
+
+target:
+  freq_bare_ghz: null         # coupler bare frequency at zero flux, e.g. 8.0
+  g_max_mhz: null             # maximum coupling strength at full flux, e.g. 50
+  g_min_mhz: null             # residual coupling at zero coupling point, e.g. 0.5
+  isolation_db: null          # port isolation target, e.g. 40
+
+geometry:
+  substrate: null             # "Si" | "AlN" | "Sapphire"
+  metal: null                 # "Al" | "Nb" | "NbTiN"
+  coupler_type: null          # "transmon_coupler" | "flux_coupler"
+  pad_width_um: null          # qubit/coupler pad width
+  pad_height_um: null         # qubit/coupler pad height
+  junction_area_um2: null     # Josephson junction area (for Lj estimation)
+  coupling_gap_um: null       # gap between qubit pad and coupler pad
+
+comsol:
+  wafer_thickness_um: 300
+  freq_sweep_start_ghz: null
+  freq_sweep_stop_ghz: null
+  freq_sweep_points: 101
+
+studies_to_run: []
+# Recommended: ["eigenfrequency"] first to find bare coupler mode,
+# then ["frequency_sweep"] to map S21 vs. flux bias.
