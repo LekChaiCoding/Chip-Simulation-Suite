@@ -476,6 +476,12 @@ Everyone with access to the shared drive gets the full pipeline. They need:
 Nobody needs to know the pipeline script internals — they describe what they
 want and poll for results.
 
+**Quickstart:** Open Claude Code inside this folder and ask *"Set up the
+COMSOL suite for me"* — it will run the install and write the MCP config
+automatically. Restart Claude Code once and the 18 tools are live. If you are
+connecting to a network COMSOL server, say so: *"Set up the COMSOL suite,
+connecting to `comsol-server.lab.local`."*
+
 ---
 
 ## Project structure
