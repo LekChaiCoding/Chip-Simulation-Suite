@@ -194,7 +194,7 @@ def build_comsol_model(
 ) -> Dict[str, Any]:
     """Build (and lightly solve) the COMSOL EM model from a GDS.
 
-    Wraps ``recreate_and_solve.py`` (build → geometry validation → coarse solve).
+    Wraps ``recreate_and_solve.py`` (build → coarse solve → S-parameter extract).
     This is the **JTWPA-specific** tool; for a different device (transmon qubit,
     resonator chip, etc.) use ``run_custom_comsol_build`` instead.
 
@@ -249,7 +249,7 @@ def build_comsol_model(
     comsol_cores
         COMSOL solver thread count (default 4).
     build_only
-        If True, stop after build + geometry validation (skip the solve).
+        If True, stop after build (skip the solve).
         Useful to inspect the MPH before a long solve.
     dry_run
         If True (default), validate + health-check only. Set False to launch.
@@ -345,36 +345,6 @@ def _run_and_collect(
         "duration_s": round(res.duration_s, 2),
         "summary": f"finished rc={res.returncode}; {len(mph_paths)} MPH file(s) saved",
         "error": None if ok else "process failed (see run.log)",
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Geometry validation
-# ─────────────────────────────────────────────────────────────────────────────
-def validate_geometry(
-    mph_path: str,
-    reference_vertices_csv: Optional[str] = None,
-    comsol_host: Optional[str] = None,
-    dry_run: bool = True,
-) -> Dict[str, Any]:
-    """Validate a built model's geometry (face counts + full vertex multiset).
-
-    The mandatory gate before trusting any solve. Returns a dry-run plan when
-    ``dry_run=True`` (default). The ``mph_path`` returned from a completed
-    ``build_comsol_model`` job should be passed here.
-    """
-    cfg = load_config()
-    return _preflight(
-        "validate_geometry",
-        [cfg.python_bin, "<vertex-diff-checker>", "--mph", mph_path,
-         "--ref", reference_vertices_csv or "<ref_vertices.csv>"],
-        {"mph_path": mph_path},
-        comsol_host, cfg.comsol_port,
-        [mph_path],
-    ) if dry_run else {
-        "ok": False,
-        "error": "real-run validate_geometry requires a live COMSOL session; "
-                 "re-run on the COMSOL network.",
     }
 
 

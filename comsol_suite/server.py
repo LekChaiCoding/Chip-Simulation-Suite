@@ -19,14 +19,13 @@ Pipeline overview (CAD → COMSOL → fitting)
 Standard 21-junction JTWPA workflow:
 
     1. generate_cad()               → GDS + PNG preview
-    2. verify_cad(gds_path)         → geometry pass/fail
+    2. verify_cad(gds_path)         → geometry pass/fail (user-facing; optional)
     3. build_comsol_model(gds_path) → background job (dry_run=False on COMSOL net)
-    4. validate_geometry(mph_path)  → face-count + vertex multiset gate
-    5. run_stub_length_sweep(...)   → stub_length_sweep.dat
-    6. run_abcd_fit(data_path)      → sequential, all stubs
+    4. run_stub_length_sweep(...)   → stub_length_sweep.dat
+    5. run_abcd_fit(data_path)      → sequential, all stubs
        OR
        run_abcd_fit_parallel(data_path) → concurrent, one subprocess per stub
-    7. get_job_result(job_id)       → fitted Cg, Z0, CSV paths
+    6. get_job_result(job_id)       → fitted Cg, Z0, CSV paths
 
 Custom device workflow (user-supplied scripts):
 
@@ -136,7 +135,7 @@ def build_comsol_model(
     dry_run: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
-    """Build the JTWPA COMSOL EM model from a GDS (build → validate → coarse solve).
+    """Build the JTWPA COMSOL EM model from a GDS (build → coarse solve).
 
     Defaults to dry-run — shows the patch plan, COMSOL health, and where the
     ``.mph`` files would be saved. Set ``dry_run=False`` on the COMSOL network
@@ -224,23 +223,6 @@ def run_custom_comsol_build(
         material_overrides_var=material_overrides_var,
         comsol_host=comsol_host, comsol_cores=comsol_cores,
         dry_run=dry_run, debug=debug)
-
-
-@mcp.tool()
-def validate_geometry(
-    mph_path: str,
-    reference_vertices_csv: Optional[str] = None,
-    comsol_host: Optional[str] = None,
-    dry_run: bool = True,
-) -> Dict[str, Any]:
-    """Validate a built model's geometry (face counts + full vertex multiset).
-
-    Pass the ``mph_path`` returned from a completed ``build_comsol_model`` or
-    ``run_custom_comsol_build`` job. The dry-run shows the plan; set
-    ``dry_run=False`` on the COMSOL network to run the actual check.
-    """
-    return comsol.validate_geometry(mph_path, reference_vertices_csv,
-                                    comsol_host, dry_run)
 
 
 @mcp.tool()
