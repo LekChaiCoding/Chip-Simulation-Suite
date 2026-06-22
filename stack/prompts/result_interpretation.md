@@ -1,8 +1,8 @@
 # Result Interpretation — Fill-in Template from Actual CSV Data
 
 After COMSOL finishes (job status = "done"), use this template to read the
-results and suggest design adjustments. Always fill from the ACTUAL CSV —
-never report values without reading the file first.
+results and score the current grid-search trial. Always fill from the ACTUAL
+CSV — never report values without reading the file first.
 
 ---
 
@@ -63,7 +63,15 @@ Result summary (iter_NNN):
 
 ---
 
-## Step 4 — Suggest adjustment
+## Step 4 — Score the trial
+
+Compute a normalized score for the automated search controller:
+
+```text
+freq_score = abs(freq_error_pct) / accepted_freq_error_pct
+q_score = abs(Q_error_pct) / accepted_q_error_pct
+score = max(freq_score, q_score)   # or weighted RMS for multi-target studies
+```
 
 Use these physics-informed rules for resonator tuning:
 
@@ -80,9 +88,9 @@ For transmon:
 - freq too LOW → increase junction inductance (smaller junction area)
 - freq too HIGH → decrease junction inductance (larger junction area)
 
-State the adjustment as a specific change to geometry parameters:
-> "I suggest decreasing length_um from [old] to [new] (−[pct]%) to raise the
->  resonance from [result] to [target] GHz."
+In automated mode, do not ask the user to approve each adjustment. Record the
+score and hand the result back to `automated_grid_search.md`, which selects the
+next candidate from the approved search space.
 
 ---
 
@@ -102,9 +110,9 @@ iterations:
     vs_target:
       freq_pct: <signed float>
       Q_pct: <signed float>
-    ai_suggestion: "<specific geometry change suggestion>"
-    action: ADJUST   # ADJUST | ACCEPT | ABORT
+    score: <float>
+    search_action: CONTINUE   # CONTINUE | ACCEPT | ABORT
 ```
 
-Once `action: ACCEPT` (both freq and Q within ±2% of target), report:
+Once `search_action: ACCEPT` (all targets within the approved tolerance), report:
 > "Design converged. Final parameters saved to design_params.yaml."

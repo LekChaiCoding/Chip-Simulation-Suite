@@ -10,6 +10,7 @@ Use this guide when the user asks what study to run, or when filling
 ```
 New device (no prior simulation)?
   └─► Eigenfrequency first (~5 min, no sweep needed)
+      Then: automated grid search until targets pass
       Then: frequency sweep around identified peak (~30 min)
 
 Optimizing a known resonance?
@@ -98,3 +99,17 @@ This is the default. No Julia installation required.
 
 To check if Julia is available: call `describe_config()` and look at `julia_bin`.
 If it points to a real binary (not just "julia"), the environment is likely set up.
+
+---
+
+## Automated tuning mode
+
+After CAD verification and material confirmation, prefer automated tuning over
+manual one-off adjustments. Use `automated_grid_search.md` to select approved
+parameter ranges, run the chosen study repeatedly, score each result from the
+actual CSV output, and stop when the model matches the design targets.
+
+Recommended study inside the loop:
+- Resonator/coupler/transmon: eigenfrequency for fast frequency/mode screening.
+- TWPA: stub-length sweep plus ABCD fit when Cg/Z0/gain are the target metrics.
+- Final accepted design: optional dense frequency sweep for Q extraction.

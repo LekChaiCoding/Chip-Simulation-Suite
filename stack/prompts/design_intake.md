@@ -50,18 +50,10 @@ an estimate. Estimates are marked with `# estimate` in the YAML.
 
 Ask about each `null` in the `geometry:` section.
 
-**Substrate choice** (required for all devices):
-> "What substrate? Common choices: Si (most common), AlN (piezoelectric, used in
->  some TWPAs), Sapphire (ultra-low loss). Which one?"
-
-→ After the user picks, display the material properties (see `material_selection.md`)
-  and ask for confirmation before continuing.
-
-**Metal choice** (required for all devices):
-> "What metal layer? Al (Tc=1.2K, easy to fab), Nb (Tc=9.2K, harder but higher Q),
->  NbTiN (Tc~15K, used in NbTiN TWPAs). Which one?"
-
-→ Same: display properties, ask for confirmation.
+Do not finalize substrate or metal here. If the user mentions a material
+preference, record it as a draft value only. The material-selection conversation
+happens after CAD has been generated and verified, so the user can confirm the
+actual COMSOL material parameters immediately before the first build.
 
 **Device-specific geometry:**
 - For resonators: ask line_width_um, gap_um. Offer to compute length_um from freq.

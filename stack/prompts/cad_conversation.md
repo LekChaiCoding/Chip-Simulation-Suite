@@ -74,7 +74,7 @@ Pass `junction_inductance_ph` and `geom_params` to it directly.
 
 After generating the GDS, always call:
 ```
-run_cad_verify(gds_path="<path>")
+verify_cad(gds_path="<path>")
 ```
 This runs `cad_verify_gds.py` which checks:
 - All expected layers exist
@@ -83,3 +83,9 @@ This runs `cad_verify_gds.py` which checks:
 
 If verification fails, adjust the generation script parameters and retry.
 Do NOT pass a failing GDS to COMSOL.
+
+## Hand off to materials
+
+After the GDS passes verification, do not build the COMSOL model yet. Proceed to
+`material_selection.md` so the human can confirm substrate, metal, loss tangent,
+and COMSOL material parameter values against the actual verified geometry.

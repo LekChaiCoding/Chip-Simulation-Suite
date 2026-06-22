@@ -3,6 +3,10 @@
 Show this table to the user when they select substrate and metal.
 Get explicit confirmation before the first COMSOL build for each session.
 
+This conversation happens after CAD generation and GDS verification, not during
+initial design intake. At this point the geometry is fixed enough to choose the
+COMSOL material model deliberately before the automated simulation loop starts.
+
 ---
 
 ## Substrate properties
@@ -51,6 +55,10 @@ After displaying the table, always ask:
 Only proceed to COMSOL build after explicit confirmation.
 Only show this confirmation once per session (not once per iteration).
 
+Write the confirmed values into `design_params.yaml` and `session.yaml`, then
+pass them as `material_params` to `build_comsol_model` or
+`run_custom_comsol_build`.
+
 ---
 
 ## Sub-loss guidance
@@ -60,3 +68,11 @@ Only show this confirmation once per session (not once per iteration).
 - Second pass (Q extraction): set `sub_loss_tan` to the real value for the
   chosen substrate.
 - This is automatically tracked in `session.yaml` under `design_params_delta`.
+
+## Hand off to automated tuning
+
+After materials are confirmed, proceed to `automated_grid_search.md`. The AI
+should ask the human to approve the tunable parameter ranges, tolerances, and
+trial budget once, then run analysis, parameter changes, and simulations
+automatically until a candidate satisfies the design targets or a stop condition
+is reached.

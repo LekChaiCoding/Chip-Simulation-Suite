@@ -14,9 +14,8 @@ Just describe your device in plain English:
 
 Claude will:
 1. Load `stack/device_templates/resonator.yaml`
-2. Ask a few clarifying questions (gap width, line width, metal choice)
-3. Show you the material properties for your chosen substrate + metal
-4. Ask for confirmation before using those values
+2. Ask a few clarifying questions (gap width, line width, starting length)
+3. Record any material preference as a draft value, without final confirmation
 
 At the end of this step, a populated `design_params.yaml` is saved to
 `stack/sessions/resonator_<date>/`.
@@ -37,7 +36,21 @@ If verification fails, Claude adjusts and retries automatically.
 
 ---
 
-## Step 3 — Build the COMSOL model
+## Step 3 — Confirm materials
+
+After the CAD is created and verified, Claude runs the material-selection
+conversation:
+
+> "The GDS verification passed. Before I build the COMSOL model, confirm the
+>  materials: substrate = Si, metal = Al, first-pass loss tangent = 0."
+
+Claude shows the material table, asks for confirmation or corrections, then
+writes the confirmed `sub_eps_r`, `sub_loss_tan`, and metal model into
+`design_params.yaml` and `session.yaml`.
+
+---
+
+## Step 4 — Build the COMSOL model
 
 Claude calls `build_comsol_model` (for JTWPA) or `run_custom_comsol_build`
 (for any other device). Always dry-run first:
@@ -51,50 +64,44 @@ Claude polls `get_job_status` and tells you when it's done.
 
 ---
 
-## Step 4 — Run the eigenfrequency study
+## Step 5 — Automated grid-search tuning
 
-Once the model is built, run eigenfrequency analysis to locate your resonances:
+Once materials are confirmed, Claude asks for one approval of the automated
+tuning plan:
 
-> "Running eigenfrequency study: 5 modes in [1, 20] GHz..."
+> "I'll tune `length_um` from 9000 to 9800 um in 100 um steps, then refine
+>  around the best result. Target: 5.5 GHz within 1%, Q within 5%.
+>  Maximum budget: 20 COMSOL trials. Approve this search space?"
 
-After ~5 min:
-> "Mode 1: f = 5.32 GHz, Q = 48,200, loss = 0.069 MHz
->  Mode 2: f = 10.64 GHz, Q = 52,100 (spurious harmonic)"
+After approval, Claude runs the loop automatically:
 
-Claude plots the results with `scripts/analysis/plot_results.py` and saves a
-PNG to `stack/sessions/resonator_<date>/iter_001_initial/eigenfreqs.png`.
+1. Generate the candidate parameter set.
+2. Regenerate and verify CAD if geometry changed.
+3. Build or update the COMSOL model with the confirmed materials.
+4. Run eigenfrequency or the selected study.
+5. Read the actual CSV output.
+6. Score frequency, Q, linewidth, coupling, or fitted parameters against target.
+7. Keep the best candidate and continue until tolerance or budget is reached.
 
----
-
-## Step 5 — Interpret results and iterate
-
-Claude compares the result against your target:
-
-> "Resonance at 5.32 GHz, target 5.50 GHz — 3.3% below target.
->  Suggestion: shorten the resonator length by 3.3%
->  (from 9512 µm to 9197 µm)."
-
-Say "yes, adjust" and Claude:
-1. Updates `design_params.yaml` with the new length
-2. Regenerates the GDS
-3. Rebuilds the COMSOL model
-4. Runs the eigenfrequency study again
-
-After 2–3 iterations you'll typically converge to within ±1% of target.
-All iterations are logged in `session.yaml`.
+The loop follows the same pattern as the reference tuning scripts in
+`Z:\users\ishida\backup\python_script`: set parameters, regenerate
+geometry/mesh, run the study, extract numerical results, score the trial, and
+store the best candidate.
 
 ---
 
-## Step 6 — Frequency sweep for Q extraction (optional)
+## Step 6 — Final sweep for Q extraction (optional)
 
-Once the resonance frequency is locked in, run a narrow frequency sweep to
-extract Q from the S21 transmission lineshape:
+Once the automated tuning loop finds an accepted model, run a narrow frequency
+sweep to extract Q from the S21 transmission lineshape:
 
 > "Running frequency sweep: 5.0–6.0 GHz, 201 points..."
 
 After ~30 min:
 > "S21 lineshape: f_res = 5.498 GHz, Q_loaded = 49,800, Q_coupling = 980.
 >  Both within 0.5% of target. Design converged."
+
+All grid-search trials and the accepted final model are logged in `session.yaml`.
 
 ---
 

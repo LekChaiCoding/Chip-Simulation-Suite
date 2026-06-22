@@ -8,7 +8,8 @@ and what the COMSOL→fitting handoff looks like.
         │  gdstk, absolute chip coords
         ▼
  converter_group_recreation.gds  ───────────[tool: verify_cad → PASS/FAIL]
-        │  ECAD import
+        │  material_selection.md: human confirms substrate, metal, loss model
+        │  ECAD import + confirmed material_params
         ▼
  recreate_and_solve.py                       [tool: build_comsol_model]
         │  COMSOL: geometry + physics + mesh
@@ -29,6 +30,28 @@ and what the COMSOL→fitting handoff looks like.
         │  Bloch k(ω), Δk = 2k_p − k_s − k_i
         ▼
  dispersion_analysis.csv, delta_k.csv
+```
+
+For general resonator, coupler, transmon, and custom-device work, the same
+CAD -> material confirmation -> COMSOL boundary is followed, but the analysis
+stage is usually an automated tuning loop:
+
+```
+ design_params.yaml + verified GDS + confirmed material_params
+        │
+        ▼
+ automated_grid_search.md
+        │  choose approved parameter ranges and tolerances once
+        │
+        ├─► generate/update CAD if geometry changed
+        ├─► build/update COMSOL model with confirmed materials
+        ├─► run eigenfrequency, sweep, or fitting study
+        ├─► read the actual CSV output
+        ├─► score the trial against design targets
+        └─► refine the grid until accepted or budget exhausted
+        │
+        ▼
+ accepted design_params.yaml + final .mph/.csv/.png outputs
 ```
 
 ## Key file formats
@@ -73,6 +96,13 @@ residual matching the Julia reference). For bridge/003 that gives:
 Other (topology, objective) rows are an *intentional* sweep of alternatives;
 some collapse in the 300–400 µm breakdown region — that is the point of the
 comparison, not a bug.
+
+### Automated grid-search log (`session.yaml`)
+For AI-driven tuning, each candidate records the tested parameters, output files,
+target errors, normalized score, status, and the current best design. The loop is
+based on the tuning pattern in `Z:\users\ishida\backup\python_script`: update
+COMSOL parameters, regenerate geometry/mesh, run the study, extract numerical
+results, score the trial, and keep the best candidate.
 
 ## Physics constants (this device)
 

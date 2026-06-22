@@ -2,9 +2,10 @@
 
 ## Goal
 
-Expose the lab's three-stage chip-simulation pipeline (CAD → COMSOL → fitting)
-as MCP tools so it can be driven from Claude Code, **without rewriting any of the
-validated physics/geometry code**.
+Expose the lab's guided chip-simulation pipeline (CAD → material confirmation →
+COMSOL → automated analysis/fitting) as MCP tools and prompts so it can be driven
+from Claude Code, **without rewriting any of the validated physics/geometry
+code**.
 
 ## Core decision: a thin subprocess orchestrator
 

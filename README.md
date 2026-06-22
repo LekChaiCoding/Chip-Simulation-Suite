@@ -1,8 +1,9 @@
 # Chip Simulation Suite
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that
-exposes a three-stage superconducting chip simulation pipeline — **CAD →
-COMSOL → circuit fitting** — as tools that any AI coding assistant can drive.
+exposes a guided superconducting chip simulation pipeline — **CAD →
+materials → COMSOL → analysis/fitting** — as tools that any AI coding assistant
+can drive.
 
 You describe what you want in plain language. The AI calls the right tools in
 the right order, monitors background jobs, and surfaces the `.mph` files and
@@ -12,7 +13,8 @@ fitted parameters when done. You never touch a script directly.
 You: "Generate the CAD for my 21-junction JTWPA, run the stub-length sweep
       at 300–400 µm in parallel, and fit the ABCD matrix."
 
-AI:  generate_cad()  →  verify_cad()  →  build_comsol_model(dry_run=False)
+AI:  generate_cad()  →  verify_cad()  →  confirm materials with the user
+     →  build_comsol_model(dry_run=False)  →  run grid-search tuning
      →  run_stub_length_sweep(...)  →  run_abcd_fit_parallel()
      →  "Fit complete. Z0 ≈ 48 Ω across all stubs.
          Results at runs/.../abcd_fit_results_merged.csv"
@@ -29,7 +31,9 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | Stage | Tools | What it does |
 |-------|-------|-------------|
 | **CAD** | `generate_cad`, `verify_cad`, `run_custom_cad` | Generates GDS layouts; verifies geometry against the validated reference |
+| **Materials** | guided conversation in `stack/prompts/material_selection.md` | Confirms substrate, metal, loss tangent, and COMSOL material parameters after CAD verification |
 | **COMSOL** | `build_comsol_model`, `run_custom_comsol_build`, `run_stub_length_sweep`, `run_eigenfrequency_study`, `validate_geometry`, `export_touchstone`, `comsol_health_check` | Builds EM models with adjustable geometry and material parameters; saves inspectable `.mph` files. `run_eigenfrequency_study` finds resonances + Q-factors in ~5 min (run this FIRST for any new device) |
+| **Automated tuning** | `stack/prompts/automated_grid_search.md`, `get_job_status`, `get_job_result` | Lets the AI run parameter changes, simulations, scoring, and refinement until design targets pass or the approved budget is exhausted |
 | **Fitting** | `run_abcd_fit`, `run_abcd_fit_parallel`, `run_generic_fit`, `fit_stub_sweep`, `analyze_dispersion` | Extracts lumped circuit parameters (Cg, Z0, Bloch dispersion Δk); parallel mode is ~5× faster |
 | **Jobs** | `get_job_status`, `get_job_result`, `list_jobs` | Monitors long-running background solves; survives server restarts |
 | **Config** | `describe_config`, `comsol_health_check` | Resolves all paths; probes COMSOL connectivity without solving |
@@ -218,7 +222,21 @@ verify_cad("runs/cad-.../converter_group_recreation.gds")
     "report": "ALL PASS — recreation matches the built reference geometry pins" }
 ```
 
-**Step 2 — Check COMSOL connectivity**
+**Step 2 — Confirm materials**
+
+After the GDS passes verification, the AI asks the human to confirm substrate,
+metal, first-pass loss tangent, and the exact COMSOL material parameters. This
+happens after CAD, not during the initial geometry conversation.
+
+```
+material_params = {
+    "sub_eps_r": "11.7",
+    "sub_loss_tan": "0",
+    "metal_model": "PEC"
+}
+```
+
+**Step 3 — Check COMSOL connectivity**
 
 > *"Is COMSOL reachable?"*
 
@@ -232,7 +250,7 @@ If `ok: false` you are off-network. All COMSOL tools still work in
 `dry_run=True` — they return the exact plan (including which `.mph` files
 would be saved) without running anything.
 
-**Step 3 — Build the COMSOL EM model**
+**Step 4 — Build the COMSOL EM model**
 
 > *"Build the model with an 8-thread solve. Adjust the stub length to 350 µm and use silicon substrate. Show me the plan first."*
 
@@ -262,7 +280,7 @@ Set `dry_run=False` on the COMSOL network to launch the real solve as a
 background job. Use `build_only=True` to stop after saving `model_built.mph`
 so you can inspect geometry before committing to a long solve.
 
-**Step 4 — Inspect the `.mph` file**
+**Step 5 — Inspect the `.mph` file**
 
 Every completed COMSOL job returns `mph_paths` — open any of them directly in
 the **COMSOL GUI** to verify your work:
@@ -273,7 +291,20 @@ the **COMSOL GUI** to verify your work:
 | `model_solved.mph` | Field distributions, S-parameter convergence, port excitation |
 | `stub_<N>um.mph` | Per-stub solution from the sweep (one file per stub length) |
 
-**Step 5 — Parametric stub-length sweep**
+**Step 6 — Automated grid-search tuning**
+
+For new devices, the AI should run automated tuning after materials are
+confirmed. The human approves the parameter ranges, tolerances, and trial budget
+once; the AI then iterates different models by grid search, reads each result
+CSV, scores it against the design targets, and keeps refining until a candidate
+passes or the budget is exhausted.
+
+The loop follows the reference tuning scripts in
+`Z:\users\ishida\backup\python_script`: set COMSOL parameters, regenerate
+geometry/mesh, run the study, extract numerical results, score the trial, and
+store the best candidate.
+
+**Step 7 — Parametric stub-length sweep**
 
 > *"Sweep 300–400 µm at 16 frequency points, extracting the full 2×2 S-matrix. Resume safely if it crashes."*
 
@@ -290,7 +321,7 @@ run_stub_length_sweep(
 → { "job_id": "comsol_sweep-a3f9...", "status": "running" }
 ```
 
-**Step 6 — Fit the circuit model (parallel)**
+**Step 8 — Fit the circuit model (parallel)**
 
 > *"Fit the ABCD matrix for all stubs simultaneously."*
 
@@ -320,7 +351,7 @@ sequential on a multi-core machine. Results for the canonical
 | 340 | 124.7 | 48.1 |
 | 400 | 147.5 | 44.2 |
 
-**Step 7 — Bloch dispersion analysis (optional, needs Julia)**
+**Step 9 — Bloch dispersion analysis (optional, needs Julia)**
 
 ```
 analyze_dispersion()
