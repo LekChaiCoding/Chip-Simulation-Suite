@@ -32,13 +32,13 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 |-------|-------|-------------|
 | **CAD** | `generate_cad`, `verify_cad`, `run_custom_cad` | Generates GDS layouts; verifies geometry against the validated reference |
 | **Materials** | guided conversation in `stack/prompts/material_selection.md` | Confirms substrate, metal, loss tangent, and COMSOL material parameters after CAD verification |
-| **COMSOL** | `build_comsol_model`, `run_custom_comsol_build`, `run_stub_length_sweep`, `run_eigenfrequency_study`, `validate_geometry`, `export_touchstone`, `comsol_health_check` | Builds EM models with adjustable geometry and material parameters; saves inspectable `.mph` files. `run_eigenfrequency_study` finds resonances + Q-factors in ~5 min (run this FIRST for any new device) |
+| **COMSOL** | `build_comsol_model`, `run_custom_comsol_build`, `run_stub_length_sweep`, `run_eigenfrequency_study`, `export_touchstone`, `comsol_health_check` | Builds EM models with adjustable geometry and material parameters; saves inspectable `.mph` files. `run_eigenfrequency_study` finds resonances + Q-factors in ~5 min (run this FIRST for any new device) |
 | **Automated tuning** | `stack/prompts/automated_grid_search.md`, `get_job_status`, `get_job_result` | Lets the AI run parameter changes, simulations, scoring, and refinement until design targets pass or the approved budget is exhausted |
 | **Fitting** | `run_abcd_fit`, `run_abcd_fit_parallel`, `run_generic_fit`, `fit_stub_sweep`, `analyze_dispersion` | Extracts lumped circuit parameters (Cg, Z0, Bloch dispersion Δk); parallel mode is ~5× faster |
 | **Jobs** | `get_job_status`, `get_job_result`, `list_jobs` | Monitors long-running background solves; survives server restarts |
 | **Config** | `describe_config`, `comsol_health_check` | Resolves all paths; probes COMSOL connectivity without solving |
 
-19 tools total — full reference in [`docs/TOOLS.md`](docs/TOOLS.md).
+18 tools total — full reference in [`docs/TOOLS.md`](docs/TOOLS.md).
 
 ---
 
@@ -53,7 +53,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | Julia + JosephsonCircuits.jl | Julia fitting tools | optional; Python fitting works without it |
 | Claude Code / Codex / Cursor / … | AI-driven workflow | any MCP-compatible client |
 
-The MCP server starts and all 19 tools register **without COMSOL or Julia
+The MCP server starts and all 18 tools register **without COMSOL or Julia
 installed**. COMSOL tools stay in `dry_run=True` (plan-only) mode until
 a live connection is available.
 
@@ -61,18 +61,21 @@ a live connection is available.
 
 ## Installation
 
-### 1. Clone
+### 1. Access the shared drive
 
-```bash
-git clone https://github.com/LekChaiCoding/Chip-Simulation-Suite.git
-cd Chip-Simulation-Suite
+The suite lives on the lab shared drive. Mount the drive and navigate to:
+
+```
+Z:\users\Alex\Chip Simulation\COMSOL Simulation Suite
 ```
 
-The suite auto-discovers the pipeline scripts relative to its own location.
-If you clone it **inside** a `Chip Simulation` folder that already contains
-the project scripts (`COMSOL Simulation/001/Scripts/`, `JosephsonCircuit/`,
-etc.) everything resolves automatically. Otherwise see
-[Per-machine configuration](#per-machine-configuration).
+> **Drive letter may vary by machine.** If your shared drive is not mapped to
+> `Z:`, use whatever letter it is mounted at. The rest of the path stays the
+> same. On Linux/macOS the mount point is typically
+> `/mnt/smb/HSS/users/Alex/Chip Simulation/COMSOL Simulation Suite`.
+
+The suite auto-discovers all pipeline scripts relative to its own location
+inside `Chip Simulation` — no extra configuration needed on lab machines.
 
 ### 2. Install
 
@@ -118,7 +121,7 @@ Add to `~/.claude/settings.json` (user-wide) or `.claude/settings.json`
     "comsol-suite": {
       "command": "python",
       "args": ["-m", "comsol_suite"],
-      "cwd": "/path/to/Chip-Simulation-Suite",
+      "cwd": "Z:/users/Alex/Chip Simulation/COMSOL Simulation Suite",
       "env": {
         "COMSOL_HOST": "your-lab-comsol-server"
       }
@@ -126,6 +129,9 @@ Add to `~/.claude/settings.json` (user-wide) or `.claude/settings.json`
   }
 }
 ```
+
+> Replace `Z:` with your actual drive letter. Drop the `env` block entirely
+> to use a local COMSOL install instead of a network server.
 
 Restart Claude Code. Confirm the tools loaded:
 > *"Describe the COMSOL suite config."*
@@ -139,7 +145,7 @@ Restart Claude Code. Confirm the tools loaded:
     "comsol-suite": {
       "command": "python",
       "args": ["-m", "comsol_suite"],
-      "cwd": "/path/to/Chip-Simulation-Suite",
+      "cwd": "Z:/users/Alex/Chip Simulation/COMSOL Simulation Suite",
       "env": { "COMSOL_HOST": "your-lab-comsol-server" }
     }
   }
@@ -155,7 +161,7 @@ Restart Claude Code. Confirm the tools loaded:
     "comsol-suite": {
       "command": "python",
       "args": ["-m", "comsol_suite"],
-      "cwd": "/path/to/Chip-Simulation-Suite"
+      "cwd": "Z:/users/Alex/Chip Simulation/COMSOL Simulation Suite"
     }
   }
 }
@@ -164,12 +170,9 @@ Restart Claude Code. Confirm the tools loaded:
 Check your editor's MCP documentation for the exact config filename. The
 server command is the same for every client.
 
-### Windows paths
-
-Use forward slashes in the `cwd` field:
-```
-"cwd": "Z:/users/Alex/Chip Simulation/Chip-Simulation-Suite"
-```
+> **Note on paths:** Always use forward slashes in the `cwd` field, even on
+> Windows. Replace `Z:` with your actual drive letter if the shared drive is
+> mounted differently on your machine.
 
 ### Running the server directly
 
@@ -459,13 +462,16 @@ nothing disappears silently.
 
 ## Sharing with lab mates
 
-Everyone with access to this repo gets the full pipeline. They need:
+Everyone with access to the shared drive gets the full pipeline. They need:
 
-1. **Clone** (or access via the shared drive): `git clone https://github.com/LekChaiCoding/Chip-Simulation-Suite.git`
-2. **Install**: `pip install -e .` (add `[comsol]` on COMSOL machines)
+1. **Access the shared drive** and navigate to
+   `Z:\users\Alex\Chip Simulation\COMSOL Simulation Suite`
+   (replace `Z:` with your actual drive letter)
+2. **Install**: open a terminal in that folder and run
+   `pip install -e .` (add `[comsol]` on machines with a COMSOL licence)
 3. **Configure** their AI client (see [Deployment](#deployment--connecting-to-an-ai-model))
-4. **Optional**: copy `config/paths.example.toml` → `config/paths.toml` for a
-   different Python, Julia, or COMSOL host
+4. **Optional**: copy `config/paths.example.toml` → `config/paths.toml` to
+   override the Python interpreter, Julia path, or COMSOL host
 
 Nobody needs to know the pipeline script internals — they describe what they
 want and poll for results.
