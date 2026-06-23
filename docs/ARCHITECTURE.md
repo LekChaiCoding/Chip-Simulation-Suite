@@ -51,20 +51,54 @@ byte-for-byte unchanged; only I/O destinations move into `runs/`.
 This is why the suite never writes into `bridge/`, `gds/`, or the original
 `Scripts/` folders.
 
+## Device-Agnostic Design
+
+**Core rule: no geometry names in tool logic.**
+
+Tools are the backbone of the suite — they provide process management, path
+patching, health checks, and CSV I/O. They carry *zero* device-specific knowledge.
+All device-specific logic lives in user-supplied scripts:
+
+| Responsibility | Where it lives |
+|----------------|----------------|
+| How to draw the GDS | User's CAD script (`generate_cad(cad_script=...)`) |
+| How to check the GDS | User's checker script (`verify_cad(checker_script=...)`) |
+| How to build the COMSOL model | User's build script (`run_custom_comsol_build(build_script=...)`) |
+| Which geometry parameter to sweep | CLI arg (`run_geometry_param_sweep(param_name=...)`) |
+| Which COMSOL selections exist | User-supplied list (`path_selections=["resonator_path", ...]`) |
+| Circuit physics formulae | `circuit_physics.py` pure-math library (no geometry assumed) |
+| Pipeline state / stage tracking | `design_params.yaml` + `get_pipeline_session_plan` |
+
+This means the same `run_geometry_param_sweep` can sweep stub length on a JTWPA,
+slider length on a half-wave resonator, coupler angle on a transmon, or any other
+named COMSOL parameter — without modification.
+
+**Deprecated JTWPA-specific tools** (`build_comsol_model`, `run_stub_length_sweep`)
+continue to work unchanged. New work should use the generic equivalents.
+
 ## Components
 
 ```
 comsol_suite/
-├── config.py   — resolve chip_sim_root, script/data paths, COMSOL host,
-│                  interpreters. Env var > config/paths.toml > built-in default.
-├── runner.py   — patch_script() + run_command() (the only subprocess spawn point)
-├── jobs.py     — JobRegistry: background threads, UUID job ids, status persisted
-│                  to runs/<job_id>/job.json (survives server restarts)
-├── server.py   — FastMCP app; registers every tool; injects the shared registry
+├── config.py          — resolve chip_sim_root, script/data paths, COMSOL host,
+│                         interpreters. Env var > config/paths.toml > built-in default.
+├── runner.py          — patch_script() + run_command() (the only subprocess spawn point)
+├── jobs.py            — JobRegistry: background threads, UUID job ids, status persisted
+│                         to runs/<job_id>/job.json (survives server restarts)
+├── server.py          — FastMCP app; registers every tool; injects the shared registry
 └── tools/
-    ├── cad.py      — generate_cad (subprocess), verify_cad (in-process checker)
-    ├── comsol.py   — build/validate/sweep/export; default dry_run=True
-    └── fitting.py  — run_abcd_fit (Python), fit_stub_sweep/analyze_dispersion (Julia)
+    ├── cad.py             — generate_cad / verify_cad (device-agnostic); assemble_geometry
+    ├── comsol.py          — build/sweep/eigenfreq/decay; default dry_run=True
+    ├── fitting.py         — ABCD fit (Python) + Julia circuit fits
+    ├── circuit_physics.py — SC circuit math: EJ/EC, transmon, coupling g, κ, χ
+    └── design_params.py   — YAML manager: read/write params; get_session_plan
+
+scripts/
+    ├── eigenfrequency_analysis.py  — base eigenfreq (f, Q, loss)
+    ├── eigenfreq_with_fields.py    — eigenfreq + We/Wm + |E| path integrals
+    ├── geometry_param_sweep.py     — generic param sweep (any name, any study type)
+    ├── decay_rate_sweep.py         — generic decay rate sweep (voltage ratio method)
+    └── checker_template.py         — copy-and-customize GDS checker template
 ```
 
 ## Job lifecycle

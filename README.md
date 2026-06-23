@@ -30,15 +30,27 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 | Stage | Tools | What it does |
 |-------|-------|-------------|
-| **CAD** | `generate_cad`, `verify_cad`, `run_custom_cad` | Generates GDS layouts; verifies geometry against the validated reference |
+| **CAD** | `generate_cad`, `verify_cad`, `run_custom_cad`, `assemble_geometry` | Generates GDS layouts from any device script; verifies geometry; assembles multi-component chips |
 | **Materials** | guided conversation in `stack/prompts/material_selection.md` | Confirms substrate, metal, loss tangent, and COMSOL material parameters after CAD verification |
-| **COMSOL** | `build_comsol_model`, `run_custom_comsol_build`, `run_stub_length_sweep`, `run_eigenfrequency_study`, `export_touchstone`, `comsol_health_check` | Builds EM models with adjustable geometry and material parameters; saves inspectable `.mph` files. `run_eigenfrequency_study` finds resonances + Q-factors in ~5 min (run this FIRST for any new device) |
-| **Automated tuning** | `stack/prompts/automated_grid_search.md`, `get_job_status`, `get_job_result` | Lets the AI run parameter changes, simulations, scoring, and refinement until design targets pass or the approved budget is exhausted |
+| **COMSOL** | `run_custom_comsol_build`, `run_eigenfrequency_study`, `run_geometry_param_sweep`, `run_decay_rate_sweep`, `export_touchstone`, `comsol_health_check` | Builds EM models for any device; sweeps any geometry parameter; extracts eigenfrequencies + field energies; computes decay rates |
+| **SC circuit physics** | `compute_circuit_params`, `run_coupling_extraction` | Computes EJ, EC, anharmonicity, coupling g, dispersive shift χ, Purcell decay κ from eigenfrequency field data — no COMSOL connection needed |
+| **Design params** | `design_params_read`, `design_params_write`, `get_pipeline_session_plan` | Atomic YAML manager + session planner; determines which pipeline stages are done and what comes next |
+| **Automated tuning** | `stack/prompts/automated_grid_search.md`, `stack/prompts/session_start.md` | Session planning (call `get_pipeline_session_plan` first); automated sweep + inversion workflows |
 | **Fitting** | `run_abcd_fit`, `run_abcd_fit_parallel`, `run_generic_fit`, `fit_stub_sweep`, `analyze_dispersion` | Extracts lumped circuit parameters (Cg, Z0, Bloch dispersion Δk); parallel mode is ~5× faster |
 | **Jobs** | `get_job_status`, `get_job_result`, `list_jobs` | Monitors long-running background solves; survives server restarts |
 | **Config** | `describe_config`, `comsol_health_check` | Resolves all paths; probes COMSOL connectivity without solving |
 
-18 tools total — full reference in [`docs/TOOLS.md`](docs/TOOLS.md).
+**26 tools total** — full reference in [`docs/TOOLS.md`](docs/TOOLS.md).
+
+**Device-agnostic design:** tools are backbones; scripts carry all device-specific knowledge.
+No geometry names (JTWPA, transmon, resonator) are hardcoded inside tools.
+Works for any superconducting chip architecture out of the box.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/PIPELINE.md`](docs/PIPELINE.md)
+for the AlNtransmon D0–D6 pipeline walkthrough.
+
+> **Deprecated tools** (still functional for JTWPA): `build_comsol_model`,
+> `run_stub_length_sweep`. New work should use `run_custom_comsol_build` and
+> `run_geometry_param_sweep` respectively.
 
 ---
 
@@ -53,7 +65,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | Julia + JosephsonCircuits.jl | Julia fitting tools | optional; Python fitting works without it |
 | Claude Code / Codex / Cursor / … | AI-driven workflow | any MCP-compatible client |
 
-The MCP server starts and all 18 tools register **without COMSOL or Julia
+The MCP server starts and all 26 tools register **without COMSOL or Julia
 installed**. COMSOL tools stay in `dry_run=True` (plan-only) mode until
 a live connection is available.
 

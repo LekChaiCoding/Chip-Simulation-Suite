@@ -104,6 +104,137 @@ based on the tuning pattern in `Z:\users\ishida\backup\python_script`: update
 COMSOL parameters, regenerate geometry/mesh, run the study, extract numerical
 results, score the trial, and keep the best candidate.
 
+---
+
+## AlNtransmon pipeline walkthrough (D0–D6)
+
+This shows how the generic tools map onto a multi-stage transmon qubit design
+pipeline. The stage labels (D0–D6) are arbitrary — any pipeline can define its
+own stage names in the `stage_map` passed to `get_pipeline_session_plan`.
+
+### Start of every session
+
+```python
+get_pipeline_session_plan(
+    yaml_path = "design_Q0/design_params.yaml",
+    stage_map = {
+        "D0_capacitance":    ["design_Q0.qubit.d_q"],
+        "D1_qr_coupling":    ["design_Q0.qr_coupler.delta_angle_coupler"],
+        "D1_1_drive_port":   ["design_Q0.drive_spokes.n"],
+        "D2_readout_freq":   ["design_Q0.readout_resonator.l_slider_single"],
+        "D3_notch_position": ["design_Q0.filter.l_end"],
+        "D4_filter_freq":    ["design_Q0.filter.l_slider_single"],
+        "D5_unit_cell":      ["design_Q0.readout_port.spiral_turns"],
+    })
+# → next_stage: "D1_qr_coupling"  (if D0 is already done)
+```
+
+Then enter plan mode, confirm the sweep parameters, get approval.
+
+### D0 — Transmon pad capacitance
+
+Set the qubit pad diameter `d_q` to hit target `EC_Hz` (charging energy).
+
+```python
+# 1. Run eigenfrequency to get mode frequencies
+run_eigenfrequency_study(mph_path="qubit_built.mph", n_modes=3,
+    extract_fields=True, path_selections=["qubit_path"], dry_run=False)
+
+# 2. Extract coupling / EC from the CSV
+compute_circuit_params(f0_Hz=5.12e9, L_H=12e-9)
+# → EC_Hz, C_F, EJ_Hz, fq_Hz, anh_Hz
+
+# 3. Write back
+design_params_write("design_params.yaml", "design_Q0.qubit.d_q", 120.5)
+```
+
+### D1 — Qubit–resonator coupling angle
+
+Sweep `delta_angle_coupler` to hit target coupling `g_qr`.
+
+```python
+run_geometry_param_sweep(
+    mph_path = "qubit_res_built.mph",
+    param_name = "delta_angle_coupler",
+    param_values = [15, 20, 25, 30, 35],
+    param_unit = "deg",
+    study_type = "eigenfrequency",
+    extract_fields = True,
+    path_selections = ["resonator_path", "qubit_path"],
+    dry_run = False)
+
+run_coupling_extraction(
+    eigenfreq_csv = "runs/.../delta_angle_coupler_sweep.csv",
+    mode1_path_col = "path_resonator_path",
+    mode2_path_col = "path_qubit_path",
+    lumped_inductance_H = 12e-9)
+# → g_Hz, chi_Hz per sweep point → invert to find angle for target g
+
+design_params_write("design_params.yaml",
+                    "design_Q0.qr_coupler.delta_angle_coupler", 22.5)
+```
+
+### D2 — Readout resonator frequency
+
+Sweep `l_slider_single` (resonator length slider) to hit target `fr_Hz`.
+
+```python
+run_geometry_param_sweep(
+    mph_path = "readout_built.mph",
+    param_name = "l_slider_single",
+    param_values = [3800, 4000, 4200, 4400, 4600],
+    param_unit = "um",
+    study_type = "eigenfrequency",
+    n_modes = 2,
+    dry_run = False)
+# → CSV with freq_ghz per slider value → fit a line, invert to target fr
+design_params_write("design_params.yaml",
+                    "design_Q0.readout_resonator.l_slider_single", 4150.0)
+```
+
+### D3–D4 — Purcell filter
+
+Sweep filter geometry parameters to position the notch and set filter frequency.
+Same pattern: `run_geometry_param_sweep` → invert calibration curve →
+`design_params_write`.
+
+### D5 — Purcell decay rate (T₁)
+
+```python
+run_decay_rate_sweep(
+    mph_path = "full_chip_built.mph",
+    sweep_param = "L_jj",
+    sweep_values = [8e-9, 10e-9, 12e-9, 14e-9, 16e-9],
+    sweep_unit = "H",
+    junction_selection = "jj_node",
+    port_selection = "readout_port_node",
+    shunt_capacitance_F = 85e-15,
+    freq_ghz = 5.12,
+    dry_run = False)
+# → kappa_MHz, T1_us per LJJ → find LJJ giving T1 > 100 µs
+design_params_write("design_params.yaml", "design_Q0.decay.T1_us", 142.3)
+```
+
+### D6 — Final assembly
+
+```python
+assemble_geometry(
+    components=[
+        {"gds_path": "qubit.gds",   "cell_name": "qubit_top",  "x_um": 0,   "y_um": 0},
+        {"gds_path": "readout.gds", "cell_name": "readout_top","x_um": 600, "y_um": 0},
+        {"gds_path": "filter.gds",  "cell_name": "filter_top", "x_um": 1200,"y_um": 0},
+    ],
+    output_path = "chip_Q0_final.gds",
+    top_cell_name = "Q0_final")
+design_params_write("design_params.yaml",
+                    "design_Q0.final.assembled_gds", "chip_Q0_final.gds")
+```
+
+All tool calls above use the **device-agnostic** tools — replace the script
+paths and parameter names to adapt this walkthrough to any qubit architecture.
+
+---
+
 ## Physics constants (this device)
 
 | Symbol | Value | Meaning |

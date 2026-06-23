@@ -7,30 +7,65 @@ immediately; poll with `get_job_status` / `get_job_result`.
 
 ## CAD stage
 
-### `generate_cad(output_dir=None, debug=False)`
-Generate the 21-junction JTWPA chip GDS (the exact device imported into COMSOL).
+### `generate_cad(cad_script=None, out_gds_var="OUT_GDS", out_png_var="OUT_PNG", output_dir=None, gds_filename=None, debug=False)`
+Generate a chip GDS from **any** GDS generation script. Device-agnostic — works
+for JTWPA, transmon qubit, resonator, waveguide, or any gdstk-based layout.
 
+- **`cad_script`:** absolute path to a Python GDS generation script.
+  `None` → uses the project default (config key `cad_generator`; currently the JTWPA script).
+- **`out_gds_var`:** variable name the script uses for the GDS output path (default `OUT_GDS`).
+- **`out_png_var`:** variable name for the PNG preview (`None` to skip preview).
+- **`gds_filename`:** override the output `.gds` filename inside `output_dir`.
 - **Returns:** `{ok, gds_path, preview_png, duration_s, log_path, log_tail}`
 - **Runs:** synchronously (~5 s).
 
 ```text
-> generate_cad()
-{ "ok": true,
-  "gds_path": ".../runs/cad-1781675442/converter_group_recreation.gds",
-  "preview_png": ".../converter_group_recreation.png", "duration_s": 5.7 }
+> generate_cad()        # JTWPA default (backward-compatible)
+> generate_cad(cad_script="/path/to/transmon_cad.py", out_gds_var="OUT_GDS")
+{ "ok": true, "gds_path": ".../runs/cad-.../transmon.gds", ... }
 ```
 
-### `verify_cad(gds_path=None, debug=False)`
-Verify a GDS against the vertex-validated reference geometry pins (layer bboxes,
-21 junction bars, tine edges, pads, ports, CPW centreline).
+### `verify_cad(gds_path=None, checker_script=None, gds_var="RECR", debug=False)`
+Verify a GDS against **any** geometry checker script. Device-agnostic — supply
+a checker for any device, or use `None` for the project default (JTWPA).
 
-- **Returns:** `{passed, gds_path, n_failures, report}`
-- **Default:** the repo's reference GDS if `gds_path` omitted.
+- **`checker_script`:** absolute path to any Python checker that defines
+  `main() -> int` (0 = pass) and a module-level string constant.
+  `None` → uses the project default JTWPA checker (backward-compatible).
+- **`gds_var`:** name of the GDS path constant in the checker script
+  (default `"RECR"` — the JTWPA checker's constant). Override for other devices.
+- **`gds_path`:** override the GDS to validate. Defaults to the project reference GDS.
+- **Returns:** `{passed, gds_path, n_failures, report, checker_script}`
+
+Copy `scripts/checker_template.py` as a starting point for any device checker.
 
 ```text
-> verify_cad(".../runs/cad-.../converter_group_recreation.gds")
-{ "passed": true, "n_failures": 0,
-  "report": "RESULT: ALL PASS — recreation matches the built reference geometry pins" }
+> verify_cad()                                           # JTWPA default
+> verify_cad(checker_script="/path/to/my_checker.py",
+             gds_var="GDS_PATH",
+             gds_path="/path/to/my_device.gds")
+{ "passed": true, "n_failures": 0, "report": "ALL PASS" }
+```
+
+### `assemble_geometry(components, output_path, top_cell_name="assembly", merge_refs=True)`
+Assemble multiple GDS components into one top-level layout. Use for 4-qubit
+unit cells, resonator arrays, multi-chip assemblies, or any combination of
+sub-GDS parts.
+
+- **`components`:** list of placement dicts:
+  `{gds_path, cell_name, x_um=0, y_um=0, rotation_deg=0, magnification=1, x_reflection=False}`
+- **`output_path`:** where to write the assembled GDS.
+- **`merge_refs`:** `True` = gdstk References (smaller file); `False` = flatten.
+- **Returns:** `{ok, output_path, n_components, bbox, error}`
+
+```text
+> assemble_geometry(
+    components=[
+      {"gds_path": "qubit.gds", "cell_name": "qubit_top", "x_um": 0,   "y_um": 0},
+      {"gds_path": "res.gds",   "cell_name": "resonator",  "x_um": 500, "y_um": 0, "rotation_deg": 90},
+    ],
+    output_path="chip_assembly.gds")
+{ "ok": true, "n_components": 2, "bbox": [[0,0],[1200,800]] }
 ```
 
 ### `run_custom_cad(cad_script, output_dir=None, out_gds_var="OUT_GDS", out_png_var="OUT_PNG", gds_filename="output.gds", debug=False)`
@@ -58,7 +93,11 @@ set) a TCP connect.
 
 ---
 
-### `build_comsol_model(gds_path, junction_inductance_ph=280.0, comsol_host=None, output_dir=None, geom_params=None, material_params=None, comsol_cores=4, build_only=False, dry_run=True, debug=False)`
+### `build_comsol_model(gds_path, ...)` ⚠️ *Deprecated — JTWPA-specific*
+
+> **Deprecated.** This tool is hardcoded to the JTWPA geometry. For any other device
+> (transmon, resonator, fluxonium, etc.) use `run_custom_comsol_build` instead.
+> This tool continues to function for existing JTWPA workflows.
 
 Build the **JTWPA** EM model from a GDS (build → geometry validation → coarse solve).
 For any other device, use `run_custom_comsol_build`.
@@ -134,23 +173,130 @@ so you can open them in the COMSOL GUI to verify geometry, mesh, and solutions.
 Validate a built model (face counts + full vertex multiset) — the mandatory gate
 before trusting a solve. Pass the `mph_path` from `build_comsol_model` result.
 
-### `run_stub_length_sweep(mph_path, stub_lengths_um, freq_ghz, comsol_host=None, output_dir=None, comsol_cores=4, port="both", resume=False, dry_run=True, debug=False)`
-Parametric stub-length sweep extracting complex S-parameters (S11/S21/S12/S22).
-Produces the `.dat` the fitting tools consume. Each stub saved as an interim
-`stub_<N>um.mph` that can be opened in the COMSOL GUI.
+### `run_eigenfrequency_study(mph_path, n_modes=5, freq_start_ghz=1.0, freq_stop_ghz=20.0, extract_fields=False, path_selections=None, node_groups=None, comsol_host=None, output_dir=None, comsol_cores=4, dry_run=True, debug=False)`
+Find resonance frequencies and Q-factors via the COMSOL eigenvalue solver (~5 min).
+Run this **first** for any new device to locate resonances before a full sweep.
+
+- **`extract_fields`:** also extract `emw.intWe`, `emw.intWm`, and |E| path integrals
+  per mode. Feed the output CSV into `run_coupling_extraction` for g, χ, participation ratio.
+- **`path_selections`:** list of COMSOL named edge selections for |E| integrals, e.g.
+  `["resonator_path", "qubit_path"]`. Supply names defined in your COMSOL model.
+- **`node_groups`:** list of COMSOL node selections for complex voltage extraction.
+- **Returns (real-run):** `{job_id, status}` — poll `get_job_result` for `{eigenfrequencies_csv}`.
+
+### `run_stub_length_sweep(mph_path, stub_lengths_um, freq_ghz, ...)` ⚠️ *Deprecated*
+
+> **Deprecated.** Use `run_geometry_param_sweep(param_name="stub_length",
+> study_type="frequency_domain", ...)` for equivalent behavior with any COMSOL
+> geometry parameter. This tool continues to function for existing JTWPA workflows.
+
+### `run_geometry_param_sweep(mph_path, param_name, param_values, param_unit="um", study_type="eigenfrequency", n_modes=5, freq_start_ghz=1.0, freq_stop_ghz=20.0, extract_fields=False, path_selections=None, node_groups=None, freq_points_ghz=None, port="both", resume=False, comsol_host=None, output_dir=None, comsol_cores=4, dry_run=True, debug=False)`
+**Device-agnostic** parametric sweep over **any** COMSOL geometry parameter. Works for
+stub length (TWPA), slider length (resonator), coupler angle (transmon), gap width
+(waveguide), junction radius, or any named COMSOL parameter.
 
 | Parameter | What it does |
 |-----------|-------------|
-| `port` | `"1"`, `"2"`, or `"both"` — `"both"` extracts the full 2×2 S-matrix |
-| `resume` | Skip stubs already in the output CSV (safe crash-resume for long sweeps) |
-| `comsol_cores` | Solver threads per stub |
+| `param_name` | Any COMSOL parameter name — no hardcoding |
+| `param_unit` | COMSOL unit string: `"um"`, `"deg"`, `"H"`, etc. |
+| `study_type` | `"eigenfrequency"` or `"frequency_domain"` |
+| `extract_fields` | Extract We/Wm/path integrals per mode (eigenfreq only) |
+| `resume` | Skip values already in the output CSV (crash-safe) |
 
-- **dry-run:** `{dry_run, would_run, patches_applied, mph_files_would_save, comsol_health}`
-- **completed result:** `{mph_paths, output_files}` — one `.mph` per stub
+- **dry-run:** `{dry_run, would_run, patches_applied, comsol_health}`
+- **completed result:** `{job_id}` — one `.mph` per sweep value + output CSV
+
+```text
+> run_geometry_param_sweep(
+    mph_path="model_built.mph",
+    param_name="l_slider_single",
+    param_values=[4000, 4200, 4400, 4600],
+    param_unit="um",
+    study_type="eigenfrequency",
+    n_modes=3,
+    dry_run=True)
+```
+
+### `run_decay_rate_sweep(mph_path, sweep_param, sweep_values, sweep_unit, junction_selection, port_selection, shunt_capacitance_F, freq_ghz=None, Z0_Ohm=50.0, resume=False, comsol_host=None, output_dir=None, comsol_cores=4, dry_run=True, debug=False)`
+Sweep a lumped-element parameter and extract decay rate κ and T₁ at each point.
+Works for qubit Purcell decay (sweep L_JJ), resonator external Q (sweep coupling gap),
+or any admittance-dominated decay channel.
+
+- Computes `κ = |V_port/V_junction|² / (Z0·C)` [rad/s] and `T1 = 1/κ` [s].
+- **`junction_selection` / `port_selection`:** COMSOL named selections for voltage nodes.
+- **Returns:** one CSV row per sweep value: `{sweep_param, freq_ghz, V_junc_mag, V_port_mag, kappa_rad_s, kappa_MHz, T1_us, T1_ns}`.
+
+### `run_coupling_extraction(eigenfreq_csv, mode1_path_col, mode2_path_col, lumped_inductance_H, mode1_label="mode1", mode2_label="mode2")`
+Pure-Python post-processing — no COMSOL connection needed. Reads a CSV from
+`run_eigenfrequency_study` with `extract_fields=True` and applies
+Jaynes-Cummings energy-partition analysis.
+
+- **`mode1_path_col` / `mode2_path_col`:** CSV column names for |E| path integrals.
+- **`lumped_inductance_H`:** inductance of the lumped element (JJ, coupling inductor).
+- **Returns:** `{g_Hz, g_MHz, chi_Hz, chi_MHz, anharmonicity_Hz, f_mode1_Hz, f_mode2_Hz, mode_labels, participation_ratio, error}`
 
 ### `export_touchstone(csv_path, output_path=None, dry_run=True, debug=False)`
 Convert an extracted S-parameter CSV to a Touchstone `.s2p` file. Safe to run
 offline with `dry_run=False`.
+
+---
+
+## Superconducting circuit physics
+
+### `compute_circuit_params(**kwargs)`
+Compute superconducting circuit parameters from any input combination.
+Device-agnostic: works for transmon, fluxonium, charge qubit, or any
+lumped-element SC circuit.
+
+Pass any subset of these keyword arguments:
+
+| Key | Meaning | Unit |
+|-----|---------|------|
+| `L_H` | Josephson/coupling inductance | H |
+| `f0_Hz` | Bare oscillator frequency | Hz |
+| `EJ_Hz` / `EC_Hz` | Josephson / charging energy | Hz |
+| `C_F` | Capacitance | F |
+| `Ic_A` | Critical current | A |
+| `g_Hz` | Mode–mode coupling rate | Hz |
+| `fq_Hz` / `fr_Hz` | Qubit / resonator frequency | Hz |
+| `anh_Hz` | Anharmonicity | Hz |
+| `V_junction` / `V_port` | Voltage phasors for κ | V |
+| `Z0_Ohm` | Port impedance (default 50) | Ω |
+
+Returns all derivable quantities with `_Hz`, `_fF`, `_nH` suffixes.
+
+---
+
+## Design parameter management + session planning
+
+### `design_params_read(yaml_path, key_path)`
+Read a value from `design_params.yaml` by dot-separated key path.
+`key_path` example: `"design_Q0.readout_resonator.l_slider_single"`.
+Creates the file if it does not exist.
+
+### `design_params_write(yaml_path, key_path, value)`
+Atomically write a value by dot-separated key path (creates parent keys if missing).
+Uses `os.replace` for atomic writes — safe for concurrent MCP calls.
+
+### `get_pipeline_session_plan(yaml_path, stage_map)`
+Determine which pipeline stages are complete and what comes next. Call this
+at the **start of every session** before launching any COMSOL job.
+
+- **`stage_map`:** maps stage name → list of YAML key paths that must be non-null
+  for the stage to count as complete.
+- **Returns:** `{completed_stages, next_stage, missing_params, all_values, session_scope}`
+
+```text
+> get_pipeline_session_plan(
+    yaml_path = "design_params.yaml",
+    stage_map = {
+      "D0": ["design_Q0.qubit.d_q"],
+      "D1": ["design_Q0.qr_coupler.delta_angle_coupler"],
+      "D2": ["design_Q0.readout_resonator.l_slider_single"],
+    })
+{ "next_stage": "D1", "completed_stages": ["D0"],
+  "missing_params": ["design_Q0.qr_coupler.delta_angle_coupler", ...] }
+```
 
 ---
 

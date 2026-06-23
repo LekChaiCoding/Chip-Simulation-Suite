@@ -45,7 +45,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .config import load_config
 from .jobs import JobRegistry
-from .tools import cad, comsol, fitting
+from .tools import cad, comsol, fitting, circuit_physics, design_params
 
 # ── Shared singletons ────────────────────────────────────────────────────────
 CONFIG = load_config()
@@ -58,26 +58,67 @@ mcp = FastMCP("comsol-simulation-suite")
 # CAD stage
 # ─────────────────────────────────────────────────────────────────────────────
 @mcp.tool()
-def generate_cad(output_dir: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
-    """Generate the 21-junction JTWPA chip GDS layout (and a preview PNG).
+def generate_cad(
+    cad_script: Optional[str] = None,
+    out_gds_var: str = "OUT_GDS",
+    out_png_var: Optional[str] = "OUT_PNG",
+    output_dir: Optional[str] = None,
+    gds_filename: Optional[str] = None,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Generate a chip GDS layout from any GDS generation script.
 
-    This reproduces the exact CAD imported into COMSOL. Returns the path to the
-    written ``.gds`` and ``.png``. Pair with ``verify_cad`` to confirm the layout
-    matches the validated reference geometry.
+    Device-agnostic: works for JTWPA, transmon qubit, resonator, waveguide, or any
+    gdstk-based layout script. When ``cad_script`` is omitted, runs the project
+    default (config key: ``cad_generator``, currently the JTWPA script) for backward
+    compatibility.
+
+    - **cad_script**: absolute path to any Python GDS generation script.
+      Set ``None`` to use the project default.
+    - **out_gds_var**: variable name the script uses for the GDS output path
+      (default ``OUT_GDS``). Override to match your script's variable.
+    - **out_png_var**: variable for the PNG preview (``None`` to skip preview).
+    - **gds_filename**: override the output ``.gds`` filename within ``output_dir``.
+
+    Pair with ``verify_cad`` to confirm geometry against a custom checker.
     """
-    return cad.generate_cad(output_dir=output_dir, debug=debug)
+    return cad.generate_cad(
+        cad_script=cad_script,
+        out_gds_var=out_gds_var,
+        out_png_var=out_png_var,
+        output_dir=output_dir,
+        gds_filename=gds_filename,
+        debug=debug,
+    )
 
 
 @mcp.tool()
-def verify_cad(gds_path: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
-    """Verify a GDS against the vertex-validated reference geometry pins.
+def verify_cad(
+    gds_path: Optional[str] = None,
+    checker_script: Optional[str] = None,
+    gds_var: str = "RECR",
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Verify a GDS against any geometry checker script.
 
-    Runs the project's own CAD checker. ``passed=true`` means every geometric
-    feature (layer bboxes, 21 junction bars, tine edges, pads, ports, centreline)
-    matches the geometry measured from the built COMSOL model. Defaults to the
-    repo's reference GDS if no path is given.
+    Device-agnostic: provide any Python checker that defines a ``main() -> int``
+    and a module-level string constant. When ``checker_script`` is omitted,
+    runs the project default JTWPA checker (backward compatible).
+
+    - **checker_script**: absolute path to any checker script.
+      The script must define ``main() -> int`` (0 = pass) and a module-level
+      string constant whose name matches ``gds_var``.
+    - **gds_var**: name of the GDS path constant in the checker script
+      (default ``"RECR"`` — matches the JTWPA checker).
+      Override to match your script, e.g. ``"GDS_PATH"``.
+    - **gds_path**: override the GDS path that the checker validates.
+      Defaults to the project reference GDS.
+
+    Copy ``scripts/checker_template.py`` to write a checker for any device.
+    ``passed=true`` means ``main()`` returned 0.
     """
-    return cad.verify_cad(gds_path=gds_path, debug=debug)
+    return cad.verify_cad(gds_path=gds_path, checker_script=checker_script,
+                          gds_var=gds_var, debug=debug)
 
 
 @mcp.tool()
@@ -109,6 +150,42 @@ def run_custom_cad(
         out_png_var=out_png_var,
         gds_filename=gds_filename,
         debug=debug,
+    )
+
+
+@mcp.tool()
+def assemble_geometry(
+    components: List[Dict[str, Any]],
+    output_path: str,
+    top_cell_name: str = "assembly",
+    merge_refs: bool = True,
+) -> Dict[str, Any]:
+    """Assemble multiple GDS components into one top-level layout.
+
+    Device-agnostic: use for 4-qubit unit cells, resonator arrays, multi-chip
+    assemblies, or any combination of sub-GDS components. Each component is
+    placed as a gdstk Reference (``merge_refs=True``) or flattened
+    (``merge_refs=False``).
+
+    - **components**: list of placement dicts, each with keys:
+        - ``gds_path`` (str, required): path to the sub-GDS file.
+        - ``cell_name`` (str, required): cell within that GDS to place.
+        - ``x_um`` / ``y_um`` (float, default 0): origin in µm.
+        - ``rotation_deg`` (float, default 0): CCW rotation in degrees.
+        - ``magnification`` (float, default 1): scale factor.
+        - ``x_reflection`` (bool, default False): mirror about the x-axis.
+    - **output_path**: where to write the assembled GDS.
+    - **top_cell_name**: name of the top-level cell in the output.
+    - **merge_refs**: ``True`` = keep as gdstk References (faster, smaller
+      file); ``False`` = flatten all polygons into the top cell.
+
+    Returns ``{ok, output_path, n_components, bbox, error}``.
+    """
+    return cad.assemble_geometry(
+        components=components,
+        output_path=output_path,
+        top_cell_name=top_cell_name,
+        merge_refs=merge_refs,
     )
 
 
@@ -164,6 +241,10 @@ def build_comsol_model(
     - **build_only**: save ``model_built.mph`` and stop — useful to check
       geometry before committing to a long solve.
     - **comsol_cores**: solver thread count (default 4).
+
+    .. deprecated::
+        ``build_comsol_model`` is JTWPA-specific. For a different device
+        (transmon, resonator, etc.) use ``run_custom_comsol_build`` instead.
     """
     return comsol.build_comsol_model(
         REGISTRY, gds_path, junction_inductance_ph, comsol_host,
@@ -254,6 +335,12 @@ def run_stub_length_sweep(
 
     Completed result includes ``mph_paths`` (one file per stub) and the
     ``stub_length_sweep.dat`` consumed by the fitting tools.
+
+    .. deprecated::
+        ``run_stub_length_sweep`` is JTWPA-specific. Use
+        ``run_geometry_param_sweep(param_name='stub_length',
+        study_type='frequency_domain', ...)`` for equivalent behavior
+        with any COMSOL geometry parameter.
     """
     return comsol.run_stub_length_sweep(
         REGISTRY, mph_path, stub_lengths_um, freq_ghz, comsol_host,
@@ -266,6 +353,9 @@ def run_eigenfrequency_study(
     n_modes: int = 5,
     freq_start_ghz: float = 1.0,
     freq_stop_ghz: float = 20.0,
+    extract_fields: bool = False,
+    path_selections: Optional[List[str]] = None,
+    node_groups: Optional[List[str]] = None,
     comsol_host: Optional[str] = None,
     output_dir: Optional[str] = None,
     comsol_cores: int = 4,
@@ -275,7 +365,8 @@ def run_eigenfrequency_study(
     """Find resonance frequencies and Q-factors via COMSOL eigenvalue solver.
 
     Run this FIRST for any new device (~5 min) to locate resonances before
-    committing to a full frequency sweep (~30 min+).
+    committing to a full frequency sweep (~30 min+). Optionally extracts
+    per-mode field energies and |E| path integrals for coupling analysis.
 
     Eigenvalue physics:
       - f_resonance = Re(λ)           [GHz]
@@ -285,6 +376,15 @@ def run_eigenfrequency_study(
     - **mph_path**: built .mph with EMW physics + PEC boundaries.
     - **n_modes**: number of eigenvalues to find (1–20, default 5).
     - **freq_start_ghz** / **freq_stop_ghz**: eigenvalue search window [GHz].
+    - **extract_fields**: also extract ``emw.intWe``, ``emw.intWm``, and |E|
+      path integrals along ``path_selections``. Uses the extended script
+      ``eigenfreq_with_fields.py``. Pass the output CSV to
+      ``run_coupling_extraction`` to compute g, χ, participation ratio.
+    - **path_selections**: list of COMSOL named selections for |E| path
+      integrals, e.g. ``["resonator_path", "qubit_path"]``. Supply the
+      names you defined in the COMSOL model's geometry.
+    - **node_groups**: list of COMSOL node selections for voltage extraction,
+      e.g. ``["junction_node", "port_node"]``.
     - **comsol_cores**: solver threads (default 4).
     - **dry_run**: True (default) = validate only; False = launch background job.
 
@@ -293,6 +393,7 @@ def run_eigenfrequency_study(
     """
     return comsol.run_eigenfrequency_study(
         REGISTRY, mph_path, n_modes, freq_start_ghz, freq_stop_ghz,
+        extract_fields, path_selections, node_groups,
         comsol_host, output_dir, comsol_cores, dry_run, debug)
 
 
@@ -301,6 +402,284 @@ def export_touchstone(csv_path: str, output_path: Optional[str] = None,
                       dry_run: bool = True, debug: bool = False) -> Dict[str, Any]:
     """Convert an extracted S-parameter CSV to a Touchstone ``.s2p`` file."""
     return comsol.export_touchstone(REGISTRY, csv_path, output_path, dry_run, debug)
+
+
+@mcp.tool()
+def run_geometry_param_sweep(
+    mph_path: str,
+    param_name: str,
+    param_values: List[float],
+    param_unit: str = "um",
+    study_type: str = "eigenfrequency",
+    n_modes: int = 5,
+    freq_start_ghz: float = 1.0,
+    freq_stop_ghz: float = 20.0,
+    extract_fields: bool = False,
+    path_selections: Optional[List[str]] = None,
+    node_groups: Optional[List[str]] = None,
+    freq_points_ghz: Optional[List[float]] = None,
+    port: str = "both",
+    resume: bool = False,
+    comsol_host: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    comsol_cores: int = 4,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Parametric sweep over any COMSOL geometry parameter.
+
+    Device-agnostic replacement for ``run_stub_length_sweep``. Works for any
+    named COMSOL parameter: stub length (TWPA), slider length (resonator),
+    coupler angle (transmon), gap width (waveguide), junction radius, etc.
+
+    Supports both eigenfrequency and frequency-domain study types. Feed the
+    output CSV into ``run_coupling_extraction`` (eigenfrequency + fields) or
+    the fitting tools (frequency-domain).
+
+    - **mph_path**: built .mph with the target parameter defined.
+    - **param_name**: COMSOL parameter to sweep (e.g. ``"l_slider_single"``,
+      ``"delta_angle_coupler"``, ``"stub_length"``).
+    - **param_values**: values to sweep; units set by ``param_unit``.
+    - **param_unit**: COMSOL unit string (default ``"um"``).
+      Use ``"deg"`` for angles, ``"H"`` for inductance, etc.
+    - **study_type**: ``"eigenfrequency"`` (default) or ``"frequency_domain"``.
+    - **extract_fields**: extract per-mode We/Wm/path integrals
+      (eigenfrequency only; see ``run_eigenfrequency_study``).
+    - **freq_points_ghz**: evaluation frequencies for frequency-domain sweeps.
+    - **resume**: skip values already present in the output CSV.
+    - **dry_run**: True (default) = validate; False = launch background job.
+    """
+    return comsol.run_geometry_param_sweep(
+        REGISTRY, mph_path=mph_path, param_name=param_name,
+        param_values=param_values, param_unit=param_unit,
+        study_type=study_type, n_modes=n_modes,
+        freq_start_ghz=freq_start_ghz, freq_stop_ghz=freq_stop_ghz,
+        extract_fields=extract_fields, path_selections=path_selections,
+        node_groups=node_groups, freq_points_ghz=freq_points_ghz,
+        port=port, resume=resume, comsol_host=comsol_host,
+        output_dir=output_dir, comsol_cores=comsol_cores,
+        dry_run=dry_run, debug=debug,
+    )
+
+
+@mcp.tool()
+def run_decay_rate_sweep(
+    mph_path: str,
+    sweep_param: str,
+    sweep_values: List[float],
+    sweep_unit: str,
+    junction_selection: str,
+    port_selection: str,
+    shunt_capacitance_F: float,
+    freq_ghz: Optional[float] = None,
+    Z0_Ohm: float = 50.0,
+    resume: bool = False,
+    comsol_host: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    comsol_cores: int = 4,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Sweep a lumped-element parameter and extract decay rate κ and T₁.
+
+    Device-agnostic: works for qubit Purcell decay (sweep L_JJ), drive-port
+    coupling (sweep coupling inductance), resonator external Q (sweep coupling
+    gap), or any admittance-dominated decay channel.
+
+    For each sweep value: set the parameter, rebuild geometry+mesh, run a
+    frequency-domain study, extract voltages at two named COMSOL selections,
+    compute ``κ = |V_port/V_junction|² / (Z0 · C)`` and ``T1 = 1/κ``.
+
+    - **mph_path**: built .mph with the sweep parameter and both selections.
+    - **sweep_param**: COMSOL parameter name to sweep.
+    - **sweep_values**: values to sweep; units given by ``sweep_unit``.
+    - **sweep_unit**: COMSOL unit string (e.g. ``"H"``, ``"um"``, ``"1"``).
+    - **junction_selection**: COMSOL selection for the lumped element node.
+    - **port_selection**: COMSOL selection for the output port node.
+    - **shunt_capacitance_F**: shunt capacitance [F] for κ calculation.
+    - **freq_ghz**: fixed drive frequency [GHz] (None = model default).
+    - **Z0_Ohm**: port impedance (default 50 Ω).
+    - **resume**: skip values already in the output CSV.
+    - **dry_run**: True (default) = validate; False = launch background job.
+    """
+    return comsol.run_decay_rate_sweep(
+        REGISTRY, mph_path=mph_path, sweep_param=sweep_param,
+        sweep_values=sweep_values, sweep_unit=sweep_unit,
+        junction_selection=junction_selection, port_selection=port_selection,
+        shunt_capacitance_F=shunt_capacitance_F, freq_ghz=freq_ghz,
+        Z0_Ohm=Z0_Ohm, resume=resume, comsol_host=comsol_host,
+        output_dir=output_dir, comsol_cores=comsol_cores,
+        dry_run=dry_run, debug=debug,
+    )
+
+
+@mcp.tool()
+def run_coupling_extraction(
+    eigenfreq_csv: str,
+    mode1_path_col: str,
+    mode2_path_col: str,
+    lumped_inductance_H: float,
+    mode1_label: str = "mode1",
+    mode2_label: str = "mode2",
+) -> Dict[str, Any]:
+    """Extract coupling g between any two modes from eigenfrequency field data.
+
+    Pure-Python post-processing — no COMSOL connection needed. Reads the CSV
+    produced by ``run_eigenfrequency_study`` with ``extract_fields=True`` and
+    applies Jaynes-Cummings energy-partition analysis.
+
+    Device-agnostic: works for qubit-resonator, resonator-filter, or any
+    two-mode coupled system where one mode contains a lumped inductive element.
+
+    - **eigenfreq_csv**: CSV from ``run_eigenfrequency_study`` (must have
+      ``We_J``, ``Wm_J``, and the two path-integral columns).
+    - **mode1_path_col**: CSV column for |E| integral along mode 1's path
+      (typically the "resonator-like" mode).
+    - **mode2_path_col**: CSV column for |E| integral along mode 2's path
+      (typically the "qubit-like" mode).
+    - **lumped_inductance_H**: inductance of the lumped element (JJ, coupling
+      inductor, etc.) in Henry.
+    - **mode1_label** / **mode2_label**: human-readable labels in the output.
+
+    Returns ``{g_Hz, g_MHz, chi_Hz, chi_MHz, anharmonicity_Hz, f_mode1_Hz,
+    f_mode2_Hz, mode_labels, participation_ratio, error}``.
+    """
+    return comsol.run_coupling_extraction(
+        eigenfreq_csv=eigenfreq_csv,
+        mode1_path_col=mode1_path_col,
+        mode2_path_col=mode2_path_col,
+        lumped_inductance_H=lumped_inductance_H,
+        mode1_label=mode1_label,
+        mode2_label=mode2_label,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Superconducting circuit physics
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def compute_circuit_params(**kwargs: Any) -> Dict[str, Any]:
+    """Compute superconducting circuit parameters from any input combination.
+
+    Device-agnostic: works for transmon, fluxonium, charge qubit, or any
+    lumped-element superconducting circuit.
+
+    Pass any combination of the following keyword arguments and receive all
+    derivable quantities in return:
+
+    | Input key           | Meaning                           | Unit |
+    |---------------------|-----------------------------------|------|
+    | ``L_H``             | Josephson/coupling inductance     | H    |
+    | ``f0_Hz``           | Bare oscillator frequency         | Hz   |
+    | ``EJ_Hz``           | Josephson energy (in freq units)  | Hz   |
+    | ``EC_Hz``           | Charging energy (in freq units)   | Hz   |
+    | ``C_F``             | Capacitance                       | F    |
+    | ``Ic_A``            | Critical current                  | A    |
+    | ``g_Hz``            | Mode–mode coupling rate           | Hz   |
+    | ``fq_Hz``           | Qubit frequency                   | Hz   |
+    | ``fr_Hz``           | Resonator frequency               | Hz   |
+    | ``anh_Hz``          | Qubit anharmonicity               | Hz   |
+    | ``V_junction``      | Complex junction voltage phasor   | V    |
+    | ``V_port``          | Complex port voltage phasor       | V    |
+    | ``Z0_Ohm``          | Port impedance (default 50)       | Ω    |
+
+    Returns all derivable quantities as a flat dict with consistent ``_Hz``,
+    ``_fF``, ``_nH`` suffixes. Unknown kwargs are forwarded unchanged.
+    """
+    return circuit_physics.compute_circuit_params(**kwargs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Design parameter management + session planning
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def design_params_read(yaml_path: str, key_path: str) -> Dict[str, Any]:
+    """Read a value from a design_params.yaml by dot-separated key path.
+
+    - **yaml_path**: absolute path to the YAML file.
+    - **key_path**: dot-separated key chain, e.g.
+      ``"design_Q0.readout_resonator.l_slider_single"``.
+
+    Returns ``{ok, value, key_path, yaml_path, error}``.
+    Creates the file with an empty dict if it does not exist.
+    """
+    try:
+        value = design_params.read_param(yaml_path, key_path)
+        return {"ok": True, "value": value, "key_path": key_path,
+                "yaml_path": yaml_path, "error": None}
+    except Exception as exc:
+        return {"ok": False, "value": None, "key_path": key_path,
+                "yaml_path": yaml_path, "error": str(exc)}
+
+
+@mcp.tool()
+def design_params_write(yaml_path: str, key_path: str, value: Any) -> Dict[str, Any]:
+    """Atomically write a value to a design_params.yaml by dot-separated key path.
+
+    Creates parent keys if missing. Uses ``os.replace`` for atomic writes so
+    the file is never partially written (safe for concurrent MCP calls).
+
+    - **yaml_path**: absolute path to the YAML file (created if absent).
+    - **key_path**: dot-separated key chain, e.g.
+      ``"design_Q0.qubit.d_q"``.
+    - **value**: any YAML-serialisable value (float, int, str, list, dict).
+
+    Returns ``{ok, key_path, value, yaml_path, error}``.
+    """
+    try:
+        design_params.write_param(yaml_path, key_path, value)
+        return {"ok": True, "key_path": key_path, "value": value,
+                "yaml_path": yaml_path, "error": None}
+    except Exception as exc:
+        return {"ok": False, "key_path": key_path, "value": value,
+                "yaml_path": yaml_path, "error": str(exc)}
+
+
+@mcp.tool()
+def get_pipeline_session_plan(
+    yaml_path: str,
+    stage_map: Dict[str, List[str]],
+) -> Dict[str, Any]:
+    """Determine which pipeline stages are complete and what comes next.
+
+    Device-agnostic session planner. Works for any pipeline that tracks progress
+    in a ``design_params.yaml`` — AlNtransmon (D0–D6), resonator chip, TWPA,
+    or any multi-stage sweep workflow.
+
+    Call this at the **start of every pipeline session** before launching any
+    COMSOL job. Enter plan mode and get explicit approval before proceeding.
+
+    - **yaml_path**: path to the design_params.yaml for this device.
+    - **stage_map**: maps stage name → list of dot-separated key paths that
+      must be populated (non-null) for the stage to count as complete.
+
+      AlNtransmon example::
+
+          {
+            "D0": ["design_Q0.qubit.d_q"],
+            "D1": ["design_Q0.qr_coupler.delta_angle_coupler"],
+            "D2": ["design_Q0.readout_resonator.l_slider_single"],
+            "D3": ["design_Q0.readout_resonator.l_slider_single",
+                   "design_Q0.coupling_params.g_qr_Hz"],
+            "D4": ["design_Q0.qubit.LJJ_H"],
+            "D5": ["design_Q0.decay.kappa_Hz", "design_Q0.decay.T1_s"],
+            "D6": ["design_Q0.final.assembled_gds"]
+          }
+
+      Resonator chip example::
+
+          {
+            "freq_tune": ["res_A.l_slider_um"],
+            "Q_tune":    ["res_A.coupling_gap_um"]
+          }
+
+    Returns ``{completed_stages, next_stage, missing_params, all_values,
+    session_scope, error}``.
+    """
+    try:
+        return design_params.get_session_plan(yaml_path, stage_map)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

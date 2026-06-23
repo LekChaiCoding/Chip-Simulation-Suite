@@ -60,6 +60,12 @@ _DEFAULT_SCRIPTS: Dict[str, str] = {
     "julia_fit":     "JosephsonCircuit/Fits/003_data/Scripts/fit_stub_sweep.jl",
     "julia_disp":    "JosephsonCircuit/Fits/003_data/Scripts/dispersion_analysis.jl",
     "comsol_eigenfreq": "COMSOL Simulation Suite/scripts/eigenfrequency_analysis.py",
+    # Extended eigenfrequency with per-mode field energies + path integrals
+    "comsol_eigenfreq_fields": "COMSOL Simulation Suite/scripts/eigenfreq_with_fields.py",
+    # Generic parametric geometry sweep (any param name, eigenfreq or freq-domain)
+    "comsol_geometry_sweep": "COMSOL Simulation Suite/scripts/geometry_param_sweep.py",
+    # Generic decay-rate sweep (any lumped element → port voltage ratio)
+    "comsol_decay_sweep": "COMSOL Simulation Suite/scripts/decay_rate_sweep.py",
 }
 _DEFAULT_DATA: Dict[str, str] = {
     "reference_gds":   "gds/converter_group_recreation.gds",

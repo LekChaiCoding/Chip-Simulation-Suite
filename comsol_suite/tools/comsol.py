@@ -288,8 +288,13 @@ def build_comsol_model(
     ]
 
     if dry_run:
-        return _preflight("build_comsol_model", argv, patches_plan,
-                          comsol_host, cfg.comsol_port, mph_plan)
+        result = _preflight("build_comsol_model", argv, patches_plan,
+                            comsol_host, cfg.comsol_port, mph_plan)
+        result["deprecation_notice"] = (
+            "build_comsol_model is JTWPA-specific and deprecated. "
+            "Use run_custom_comsol_build with your device's build script instead."
+        )
+        return result
 
     # Real run: patch script and submit as background job.
     def worker(job: Job) -> Dict[str, Any]:
@@ -430,8 +435,14 @@ def run_stub_length_sweep(
     mph_plan = [str(out / f"stub_sweep_{int(s)}um.mph") for s in stub_lengths_um]
 
     if dry_run:
-        return _preflight("run_stub_length_sweep", argv, patches_plan,
-                          comsol_host, cfg.comsol_port, mph_plan)
+        result = _preflight("run_stub_length_sweep", argv, patches_plan,
+                            comsol_host, cfg.comsol_port, mph_plan)
+        result["deprecation_notice"] = (
+            "run_stub_length_sweep is deprecated. "
+            "Use run_geometry_param_sweep(param_name='stub_length', "
+            "study_type='frequency_domain', ...) for equivalent behavior."
+        )
+        return result
 
     def worker(job: Job) -> Dict[str, Any]:
         out.mkdir(parents=True, exist_ok=True)
@@ -471,6 +482,9 @@ def run_eigenfrequency_study(
     n_modes: int = 5,
     freq_start_ghz: float = 1.0,
     freq_stop_ghz: float = 20.0,
+    extract_fields: bool = False,
+    path_selections: Optional[List[str]] = None,
+    node_groups: Optional[List[str]] = None,
     comsol_host: Optional[str] = None,
     output_dir: Optional[str] = None,
     comsol_cores: int = 4,
@@ -479,40 +493,49 @@ def run_eigenfrequency_study(
 ) -> Dict[str, Any]:
     """Find resonance frequencies and Q-factors via COMSOL eigenvalue solver.
 
-    Uses the eigenfrequency_analysis.py script to add an Eigenfrequency study
-    to an existing .mph, solve it, and extract complex eigenvalues:
+    Device-agnostic: works for any .mph with EMW physics.  Optionally extracts
+    per-mode field energies and |E| path integrals for mode identification and
+    coupling extraction.
+
+    Base outputs (all modes):
       f_resonance = Re(λ)           [GHz]
       Q_factor    = Re(λ) / (2·|Im(λ)|)
       loss_rate   = |Im(λ)| · 2π   [MHz]
 
-    Run this FIRST for any new device (~5 min) to locate resonances before
-    committing to a full frequency sweep (~30 min+).
+    Extended outputs (``extract_fields=True``):
+      We_J, Wm_J          — electric / magnetic energy per mode [J]
+      path_<sel_name>     — ∫|E| ds along each named selection [V]
+      V_re/V_im_<ng_name> — complex voltage at each node group [V]
 
     Parameters
     ----------
     mph_path
-        Path to a built .mph (from build_comsol_model or run_custom_comsol_build).
-        Must have EMW physics with PEC boundaries.
+        Built .mph with EMW physics + PEC boundaries.
     n_modes
         Number of eigenvalues to compute (1–20, default 5).
-    freq_start_ghz
-        Search window lower bound in GHz (default 1.0).
-    freq_stop_ghz
-        Search window upper bound in GHz (default 20.0).
+    freq_start_ghz / freq_stop_ghz
+        Eigenvalue search window [GHz].
+    extract_fields
+        Enable per-mode field energy and path-integral extraction.
+        Uses ``eigenfreq_with_fields.py`` when True.
+    path_selections
+        COMSOL edge selection names for |E| path integrals (used with
+        ``extract_fields=True``).  E.g. ``["resonator_path", "qubit_path"]``.
+    node_groups
+        COMSOL selection names for voltage extraction (used with
+        ``extract_fields=True``).  E.g. ``["JJ_node", "readout_port"]``.
     comsol_cores
-        COMSOL solver threads (default 4).
+        Solver threads (default 4).
     dry_run
-        If True (default), validate + health-check only. Set False to launch.
+        If True (default), validate + health-check only.
 
     Returns
     -------
     dict
-        *Dry-run*: ``{dry_run, would_run, patches_applied, mph_files_would_save,
-        comsol_health, ready}``
+        *Dry-run*: ``{dry_run, would_run, patches_applied, comsol_health, ready}``
         *Real-run*: ``{job_id, status}`` — poll ``get_job_result`` for
-        ``{mph_paths, output_files, eigenfrequencies_csv}``.
+        ``{mph_paths, output_files}``.
     """
-    # Input validation BEFORE loading config (fast fail without hitting disk).
     if not 1 <= n_modes <= 20:
         return {"ok": False, "error": f"n_modes must be 1–20, got {n_modes}"}
     if freq_start_ghz >= freq_stop_ghz:
@@ -521,7 +544,9 @@ def run_eigenfrequency_study(
                          f"freq_stop_ghz ({freq_stop_ghz})"}
 
     cfg = load_config()
-    src = cfg.script("comsol_eigenfreq")
+    # Choose base or extended script depending on field extraction request.
+    script_key = "comsol_eigenfreq_fields" if extract_fields else "comsol_eigenfreq"
+    src = cfg.script(script_key)
     out = Path(output_dir) if output_dir else cfg.runs_dir / "comsol_eigenfreq"
     csv_out = out / "eigenfrequencies.csv"
 
@@ -533,15 +558,28 @@ def run_eigenfrequency_study(
         "--out", str(csv_out),
         "--cores", str(comsol_cores),
     ]
+    if extract_fields:
+        argv.append("--extract-fields")
+        if path_selections:
+            argv += ["--path-selections"] + list(path_selections)
+        if node_groups:
+            argv += ["--node-groups"] + list(node_groups)
     if debug:
         argv.append("--debug")
 
-    # Patches redirect module-level path constants in the script copy.
-    patches_plan = {
+    patches_plan: Dict[str, str] = {
         r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
         r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
         r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
     }
+    if extract_fields and path_selections:
+        patches_plan[r"^PATH_SELECTIONS\s*=.*$"] = (
+            f'PATH_SELECTIONS = {repr(list(path_selections))}'
+        )
+    if extract_fields and node_groups:
+        patches_plan[r"^NODE_GROUPS\s*=.*$"] = (
+            f'NODE_GROUPS = {repr(list(node_groups))}'
+        )
     mph_plan = [str(out / "eigenfrequency_result.mph")]
 
     if dry_run:
@@ -550,15 +588,23 @@ def run_eigenfrequency_study(
 
     def worker(job: Job) -> Dict[str, Any]:
         out.mkdir(parents=True, exist_ok=True)
+        patch_dict: Dict[str, str] = {
+            r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+            r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+            r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+            r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+        }
+        if extract_fields and path_selections:
+            patch_dict[r"^PATH_SELECTIONS\s*=.*$"] = (
+                f'PATH_SELECTIONS = {repr(list(path_selections))}'
+            )
+        if extract_fields and node_groups:
+            patch_dict[r"^NODE_GROUPS\s*=.*$"] = (
+                f'NODE_GROUPS = {repr(list(node_groups))}'
+            )
         patched = patch_script(
-            src,
-            Path(job.run_dir) / "_eigenfreq_patched.py",
-            {
-                r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
-                r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
-                r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
-                r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
-            },
+            src, Path(job.run_dir) / "_eigenfreq_patched.py",
+            patch_dict, require_all=False,
         )
         real_argv = [
             cfg.python_bin, str(patched),
@@ -568,6 +614,12 @@ def run_eigenfrequency_study(
             "--out", str(csv_out),
             "--cores", str(comsol_cores),
         ]
+        if extract_fields:
+            real_argv.append("--extract-fields")
+            if path_selections:
+                real_argv += ["--path-selections"] + list(path_selections)
+            if node_groups:
+                real_argv += ["--node-groups"] + list(node_groups)
         if debug:
             real_argv.append("--debug")
         return _run_and_collect(real_argv, Path(job.log_path), out, debug, 3600)
@@ -739,6 +791,417 @@ def run_custom_comsol_build(
 # ─────────────────────────────────────────────────────────────────────────────
 # Touchstone export
 # ─────────────────────────────────────────────────────────────────────────────
+def run_coupling_extraction(
+    eigenfreq_csv: str,
+    mode1_path_col: str,
+    mode2_path_col: str,
+    lumped_inductance_H: float,
+    mode1_label: str = "mode1",
+    mode2_label: str = "mode2",
+) -> Dict[str, Any]:
+    """Extract coupling g between two modes from eigenfrequency field data.
+
+    Pure-Python post-processing — no COMSOL connection required.  Reads the
+    CSV produced by ``run_eigenfrequency_study`` with ``extract_fields=True``
+    and applies Jaynes-Cummings energy-partition analysis.
+
+    Device-agnostic: works for qubit-resonator, resonator-filter, or any
+    two-mode coupled system where one mode has a lumped inductive element.
+
+    Parameters
+    ----------
+    eigenfreq_csv
+        CSV path from ``run_eigenfrequency_study`` (must have ``We_J``,
+        ``Wm_J``, and the two path-integral columns).
+    mode1_path_col
+        Column name for the |E| path integral of mode 1 (the "resonator-like"
+        mode).  Typically ``"path_resonator_path"``.
+    mode2_path_col
+        Column name for the |E| path integral of mode 2 (the "qubit-like"
+        mode).  Typically ``"path_qubit_path"``.
+    lumped_inductance_H
+        Inductance of the lumped element (Josephson junction, coupling
+        inductor, etc.) in Henry.
+    mode1_label / mode2_label
+        Human-readable labels for the two modes in the return dict.
+
+    Returns
+    -------
+    dict
+        ``{g_Hz, chi_Hz, f_mode1_Hz, f_mode2_Hz, mode_labels,
+        participation_ratio, error}``.
+    """
+    import csv as _csv
+    import math
+
+    try:
+        from .circuit_physics import (
+            extract_coupling_g, dispersive_shift,
+            transmon_anharmonicity, inductance_to_josephson_energy,
+            cap_to_charging_energy, calc_cap_from_eigenfreq,
+        )
+    except ImportError as exc:
+        return {"ok": False, "error": f"circuit_physics not available: {exc}"}
+
+    if not Path(eigenfreq_csv).is_file():
+        return {"ok": False, "error": f"CSV not found: {eigenfreq_csv}"}
+
+    with open(eigenfreq_csv, newline="") as fh:
+        rows = list(_csv.DictReader(fh))
+
+    if not rows:
+        return {"ok": False, "error": "CSV is empty"}
+
+    required = {"freq_ghz", "We_J", "Wm_J", mode1_path_col, mode2_path_col}
+    missing = required - set(rows[0].keys())
+    if missing:
+        return {
+            "ok": False,
+            "error": (
+                f"CSV missing columns: {sorted(missing)}. "
+                f"Run run_eigenfrequency_study with extract_fields=True and "
+                f"path_selections matching mode1_path_col / mode2_path_col."
+            ),
+        }
+
+    def _float(row: dict, key: str) -> float:
+        v = row.get(key, "")
+        return float(v) if v not in ("", "None", "nan") else math.nan
+
+    # Identify modes: the mode with larger path integral along path1 → mode1,
+    # larger along path2 → mode2.
+    mode1_row: Optional[Dict] = None
+    mode2_row: Optional[Dict] = None
+    for row in rows:
+        p1 = abs(_float(row, mode1_path_col))
+        p2 = abs(_float(row, mode2_path_col))
+        if math.isnan(p1) or math.isnan(p2):
+            continue
+        if p1 >= p2:
+            if mode1_row is None or p1 > abs(_float(mode1_row, mode1_path_col)):
+                mode1_row = row
+        else:
+            if mode2_row is None or p2 > abs(_float(mode2_row, mode2_path_col)):
+                mode2_row = row
+
+    if mode1_row is None or mode2_row is None:
+        return {
+            "ok": False,
+            "error": (
+                "Could not identify two distinct modes from path integrals. "
+                "Check path_selections names match the COMSOL model."
+            ),
+        }
+
+    f1_Hz = _float(mode1_row, "freq_ghz") * 1e9
+    We1 = _float(mode1_row, "We_J")
+    Wm1 = _float(mode1_row, "Wm_J")
+    f2_Hz = _float(mode2_row, "freq_ghz") * 1e9
+
+    try:
+        g_Hz = extract_coupling_g(f1_Hz, We1, Wm1, f2_Hz)
+    except Exception as exc:
+        return {"ok": False, "error": f"coupling extraction failed: {exc}"}
+
+    # Estimate anharmonicity from inductance for dispersive shift calculation.
+    try:
+        f0_Hz = f2_Hz  # qubit-like mode frequency
+        C_F = calc_cap_from_eigenfreq(lumped_inductance_H, f0_Hz)
+        EC_Hz = cap_to_charging_energy(C_F)
+        EJ_Hz = inductance_to_josephson_energy(lumped_inductance_H)
+        anh_Hz = transmon_anharmonicity(EJ_Hz, EC_Hz)
+        chi_Hz = dispersive_shift(f2_Hz, anh_Hz, f1_Hz, g_Hz)
+    except Exception:
+        anh_Hz = float("nan")
+        chi_Hz = float("nan")
+
+    r = math.sqrt(abs(We1 - Wm1) / Wm1) if Wm1 > 0 else float("nan")
+
+    return {
+        "ok": True,
+        "g_Hz": g_Hz,
+        "g_MHz": g_Hz / 1e6,
+        "chi_Hz": chi_Hz,
+        "chi_MHz": chi_Hz / 1e6,
+        "anharmonicity_Hz": anh_Hz,
+        "f_mode1_Hz": f1_Hz,
+        "f_mode2_Hz": f2_Hz,
+        "mode_labels": {mode1_label: f1_Hz, mode2_label: f2_Hz},
+        "participation_ratio": r,
+        "error": None,
+    }
+
+
+def run_geometry_param_sweep(
+    registry: JobRegistry,
+    mph_path: str,
+    param_name: str,
+    param_values: List[float],
+    param_unit: str = "um",
+    study_type: str = "eigenfrequency",
+    n_modes: int = 5,
+    freq_start_ghz: float = 1.0,
+    freq_stop_ghz: float = 20.0,
+    extract_fields: bool = False,
+    path_selections: Optional[List[str]] = None,
+    node_groups: Optional[List[str]] = None,
+    freq_points_ghz: Optional[List[float]] = None,
+    port: str = "both",
+    resume: bool = False,
+    comsol_host: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    comsol_cores: int = 4,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Parametric sweep over any COMSOL geometry parameter.
+
+    Device-agnostic replacement for ``run_stub_length_sweep``.  Works for any
+    named COMSOL parameter: slider length, coupler angle, gap width, junction
+    radius, or any other geometry dimension.
+
+    For each value the script:
+      1. Sets ``param_name = val[param_unit]`` in the COMSOL parameter table.
+      2. Rebuilds geometry and mesh.
+      3. Runs the configured study (eigenfrequency or frequency-domain).
+      4. Extracts results and appends a row to the output CSV.
+      5. Saves an interim ``.mph`` for GUI inspection.
+
+    Parameters
+    ----------
+    mph_path
+        Built .mph with the target geometry parameter defined.
+    param_name
+        COMSOL parameter name to sweep (e.g. ``"l_slider_single"``,
+        ``"delta_angle_coupler"``, ``"stub_length"``).
+    param_values
+        Values to sweep.  Units given by ``param_unit``.
+    param_unit
+        COMSOL unit string (default ``"um"``).  Use ``"deg"`` for angles,
+        ``"H"`` for inductance, etc.
+    study_type
+        ``"eigenfrequency"`` (default) or ``"frequency_domain"``.
+    n_modes
+        Eigenvalue count for eigenfrequency sweeps (default 5).
+    freq_start_ghz / freq_stop_ghz
+        Search window for eigenfrequency sweeps.
+    extract_fields
+        Extract per-mode We, Wm, path integrals (eigenfrequency only).
+    path_selections / node_groups
+        Named COMSOL selections for field extraction (see
+        ``run_eigenfrequency_study``).
+    freq_points_ghz
+        Frequency evaluation points for frequency-domain sweeps.
+    port
+        Port excitation for frequency-domain: ``"1"``, ``"2"``, ``"both"``.
+    resume
+        Skip parameter values already present in the output CSV.
+    dry_run
+        If True (default), validate + health-check only.
+
+    Returns
+    -------
+    dict
+        *Dry-run*: ``{dry_run, would_run, patches_applied, comsol_health}``
+        *Real-run*: ``{job_id, status}``
+    """
+    if not param_values:
+        return {"ok": False, "error": "param_values must not be empty"}
+    if study_type not in ("eigenfrequency", "frequency_domain"):
+        return {"ok": False,
+                "error": f"study_type must be 'eigenfrequency' or 'frequency_domain', "
+                         f"got {study_type!r}"}
+    if study_type == "frequency_domain" and not freq_points_ghz:
+        return {"ok": False,
+                "error": "freq_points_ghz required for frequency_domain sweep"}
+
+    cfg = load_config()
+    src = cfg.script("comsol_geometry_sweep")
+    out = (Path(output_dir) if output_dir
+           else cfg.runs_dir / f"geom_sweep_{param_name}")
+    csv_out = out / f"{param_name}_sweep.csv"
+
+    argv = [
+        cfg.python_bin, src,
+        "--param-name", param_name,
+        "--param-values"] + [str(v) for v in param_values] + [
+        "--param-unit", param_unit,
+        "--study-type", study_type,
+        "--cores", str(comsol_cores),
+        "--out", str(csv_out),
+    ]
+    if study_type == "eigenfrequency":
+        argv += ["--n-modes", str(n_modes),
+                 "--freq-start", str(freq_start_ghz),
+                 "--freq-stop", str(freq_stop_ghz)]
+        if extract_fields:
+            argv.append("--extract-fields")
+            if path_selections:
+                argv += ["--path-selections"] + list(path_selections)
+            if node_groups:
+                argv += ["--node-groups"] + list(node_groups)
+    else:
+        argv += ["--freq-points"] + [str(f) for f in (freq_points_ghz or [])]
+        argv += ["--port", port]
+    if resume:
+        argv.append("--resume")
+    if debug:
+        argv.append("--debug")
+
+    patches_plan = {
+        r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+        r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+        r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+    }
+    mph_plan = [str(out / f"{param_name}_{v}.mph") for v in param_values]
+
+    if dry_run:
+        return _preflight("run_geometry_param_sweep", argv, patches_plan,
+                          comsol_host, cfg.comsol_port, mph_plan)
+
+    def worker(job: Job) -> Dict[str, Any]:
+        out.mkdir(parents=True, exist_ok=True)
+        patched = patch_script(
+            src, Path(job.run_dir) / "_geom_sweep_patched.py",
+            {
+                r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+                r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+                r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+                r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+            },
+        )
+        return _run_and_collect(
+            [cfg.python_bin, str(patched)] + argv[2:],  # reuse argv after script
+            Path(job.log_path), out, debug, 21600,
+        )
+
+    job = registry.submit("run_geometry_param_sweep", worker, background=True)
+    return {"job_id": job.job_id, "status": job.status}
+
+
+def run_decay_rate_sweep(
+    registry: JobRegistry,
+    mph_path: str,
+    sweep_param: str,
+    sweep_values: List[float],
+    sweep_unit: str,
+    junction_selection: str,
+    port_selection: str,
+    shunt_capacitance_F: float,
+    freq_ghz: Optional[float] = None,
+    Z0_Ohm: float = 50.0,
+    resume: bool = False,
+    comsol_host: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    comsol_cores: int = 4,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Sweep a lumped-element parameter and extract decay rate at each point.
+
+    Device-agnostic: works for Purcell decay (sweep Josephson inductance),
+    drive-port coupling (sweep spoke count), resonator external Q (sweep
+    coupling gap), or any decay channel computable from a voltage ratio.
+
+    For each sweep value the script:
+      1. Sets ``sweep_param = val[sweep_unit]`` in COMSOL.
+      2. Rebuilds geometry and mesh.
+      3. Runs the frequency-domain study at ``freq_ghz`` (or the model default).
+      4. Extracts ``V_junction`` and ``V_port`` at the named selections.
+      5. Computes ``kappa = |V_port/V_junction|² / (Z0 · C)``  [rad/s].
+      6. Computes ``T1 = 1/kappa``  [s].
+
+    Parameters
+    ----------
+    mph_path
+        Built .mph with the sweep parameter and both selections defined.
+    sweep_param
+        COMSOL parameter name to sweep.
+    sweep_values
+        Values to sweep; units given by ``sweep_unit``.
+    sweep_unit
+        COMSOL unit string (e.g. ``"H"``, ``"um"``, ``"1"``).
+    junction_selection
+        COMSOL selection name for the lumped element voltage node.
+    port_selection
+        COMSOL selection name for the output port voltage node.
+    shunt_capacitance_F
+        Shunt capacitance [F] for κ = |V_p/V_j|² / (Z0·C).
+    freq_ghz
+        Fixed drive frequency [GHz].  When ``None`` the model's first
+        frequency study point is used.
+    Z0_Ohm
+        Port impedance [Ω] (default 50).
+    resume
+        Skip values already in the output CSV.
+    dry_run
+        If True (default), validate + health-check only.
+
+    Returns
+    -------
+    dict
+        *Dry-run*: ``{dry_run, would_run, patches_applied, comsol_health}``
+        *Real-run*: ``{job_id, status}``
+    """
+    if not sweep_values:
+        return {"ok": False, "error": "sweep_values must not be empty"}
+
+    cfg = load_config()
+    src = cfg.script("comsol_decay_sweep")
+    out = (Path(output_dir) if output_dir
+           else cfg.runs_dir / f"decay_sweep_{sweep_param}")
+    csv_out = out / f"{sweep_param}_decay_sweep.csv"
+
+    argv = [
+        cfg.python_bin, src,
+        "--sweep-param", sweep_param,
+        "--sweep-values"] + [str(v) for v in sweep_values] + [
+        "--sweep-unit", sweep_unit,
+        "--junction-selection", junction_selection,
+        "--port-selection", port_selection,
+        "--shunt-cap-fF", str(shunt_capacitance_F * 1e15),
+        "--z0", str(Z0_Ohm),
+        "--cores", str(comsol_cores),
+        "--out", str(csv_out),
+    ]
+    if freq_ghz is not None:
+        argv += ["--freq-ghz", str(freq_ghz)]
+    if resume:
+        argv.append("--resume")
+    if debug:
+        argv.append("--debug")
+
+    patches_plan = {
+        r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+        r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+        r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+    }
+    mph_plan = [str(out / f"{sweep_param}_{v}.mph") for v in sweep_values]
+
+    if dry_run:
+        return _preflight("run_decay_rate_sweep", argv, patches_plan,
+                          comsol_host, cfg.comsol_port, mph_plan)
+
+    def worker(job: Job) -> Dict[str, Any]:
+        out.mkdir(parents=True, exist_ok=True)
+        patched = patch_script(
+            src, Path(job.run_dir) / "_decay_sweep_patched.py",
+            {
+                r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+                r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+                r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+                r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+            },
+        )
+        return _run_and_collect(
+            [cfg.python_bin, str(patched)] + argv[2:],
+            Path(job.log_path), out, debug, 14400,
+        )
+
+    job = registry.submit("run_decay_rate_sweep", worker, background=True)
+    return {"job_id": job.job_id, "status": job.status}
+
+
 def export_touchstone(
     registry: JobRegistry,
     csv_path: str,
