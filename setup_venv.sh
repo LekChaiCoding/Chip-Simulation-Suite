@@ -64,21 +64,23 @@ echo ""
 echo "Installing packages ..."
 "${PIP}" install --quiet --upgrade pip
 # Install the suite itself (editable) plus the [comsol] extra (brings in mph).
-"${PIP}" install --quiet -e "${SCRIPT_DIR}[comsol]"
+"${PIP}" install --quiet -e "${SCRIPT_DIR}[comsol,dev]"
 # Extra runtime deps used by the pipeline scripts.
-"${PIP}" install --quiet matplotlib JPype1
+"${PIP}" install --quiet matplotlib JPype1 scipy PyYAML
 echo "Packages installed."
 
 # ── 4. Verify key imports ─────────────────────────────────────────────────────
 echo ""
 echo "Verifying imports ..."
 "${PY}" - <<'EOF'
-import mph, gdstk, jpype, matplotlib, numpy
+import mph, gdstk, jpype, matplotlib, numpy, scipy, yaml
 print(f"  mph        {mph.__version__}")
 print(f"  gdstk      {gdstk.__version__}")
 print(f"  jpype      {jpype.__version__}")
 print(f"  matplotlib {matplotlib.__version__}")
 print(f"  numpy      {numpy.__version__}")
+print(f"  scipy      {scipy.__version__}")
+print(f"  pyyaml     {yaml.__version__}")
 EOF
 
 # ── 5. Write config/paths.toml ────────────────────────────────────────────────

@@ -28,10 +28,16 @@ def test_tools_register_on_server():
     names = {t.name for t in tools}
     expected = {
         # CAD stage
-        "generate_cad", "verify_cad", "run_custom_cad",
+        "generate_cad", "verify_cad", "run_custom_cad", "assemble_geometry",
         # COMSOL stage
         "comsol_health_check", "build_comsol_model", "run_custom_comsol_build",
-        "validate_geometry", "run_stub_length_sweep", "export_touchstone",
+        "run_stub_length_sweep", "export_touchstone",
+        "run_eigenfrequency_study", "run_geometry_param_sweep",
+        "run_decay_rate_sweep", "run_coupling_extraction",
+        # SC circuit physics
+        "compute_circuit_params",
+        # Design parameter management
+        "design_params_read", "design_params_write", "get_pipeline_session_plan",
         # Fitting stage
         "run_abcd_fit", "run_abcd_fit_parallel", "run_generic_fit",
         "fit_stub_sweep", "analyze_dispersion",
@@ -40,3 +46,4 @@ def test_tools_register_on_server():
     }
     missing = expected - names
     assert not missing, f"tools not registered: {missing}"
+    assert len(names) == 26, f"expected 26 tools, got {len(names)}: {sorted(names)}"
