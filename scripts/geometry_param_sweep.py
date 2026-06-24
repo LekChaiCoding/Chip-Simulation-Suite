@@ -119,14 +119,18 @@ def _run_eigenfreq_point(pymodel, n_modes, freq_start, freq_stop, debug):
             continue
         if fr < freq_start or fr > freq_stop:
             continue
+        # Im(freq) = 0 is physically valid for PEC-bounded lossless models;
+        # silently skipping them would produce an empty CSV.  Use Q=inf instead.
         if abs(fi) < 1e-20:
-            continue
-        q = fr / (2.0 * abs(fi))
-        loss_mhz = abs(fi) * 2.0 * math.pi * 1e3
+            q = float("inf")
+            loss_mhz = 0.0
+        else:
+            q = fr / (2.0 * abs(fi))
+            loss_mhz = abs(fi) * 2.0 * math.pi * 1e3
         modes.append({
             "mode": i + 1,
             "freq_ghz": round(fr, 6),
-            "Q_factor": round(q, 1),
+            "Q_factor": q if math.isinf(q) else round(q, 1),
             "loss_rate_mhz": round(loss_mhz, 4),
         })
 

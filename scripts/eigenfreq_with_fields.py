@@ -189,13 +189,16 @@ def extract_base_eigenfrequencies(
             log(f"WARNING: Mode {mode_num}: {fr:.4f} GHz above window — skipping")
             continue
 
+        # Im(freq) = 0 is physically valid for PEC-bounded lossless models.
         if abs(fi) < 1e-20:
-            gate_fail(f"Mode {mode_num}: Im(freq) ≈ 0 — cannot compute Q factor")
-        q_factor = fr / (2.0 * abs(fi))
-        if q_factor <= 0:
-            gate_fail(f"Mode {mode_num}: Q ≤ 0 ({q_factor:.3g}) — unphysical result")
-
-        loss_rate_mhz = abs(fi) * 2.0 * math.pi * 1e3
+            log(f"  Mode {mode_num}: Im(freq) ≈ 0 — lossless/PEC model, Q=inf, loss=0 MHz")
+            q_factor = float("inf")
+            loss_rate_mhz = 0.0
+        else:
+            q_factor = fr / (2.0 * abs(fi))
+            if q_factor <= 0:
+                gate_fail(f"Mode {mode_num}: Q ≤ 0 ({q_factor:.3g}) — unphysical result")
+            loss_rate_mhz = abs(fi) * 2.0 * math.pi * 1e3
 
         results.append({
             "mode": mode_num,

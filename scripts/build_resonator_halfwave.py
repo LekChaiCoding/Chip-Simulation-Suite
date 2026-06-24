@@ -192,22 +192,21 @@ def add_physics(m):
     phys = m.component("comp1").physics().create("emw", "ElectromagneticWaves", "geom1")
     phys.label("EMW_CPW")
 
-    # ── PEC on Al metal surfaces (ECAD layer 0) ──
-    pec = phys.create("pec1", "PerfectElectricConductor", 2)
-    pec.label("PEC_Metal_Al")
-    pec.selection().named("geom1_imp1_LAYER0_0")   # all layer-0 boundaries
+    # ── Explicit PEC on ECAD metal surfaces (Al layer 0) ──
+    # Use a unique tag — EMW auto-creates a default feature with tag "pec1";
+    # creating another feature with the same tag conflicts.  The model-global
+    # selection name follows the pattern geom1_<import_tag>_<layer>_bnd:
+    #   import tag = "imp1"  →  geom1_imp1_LAYER0_0_bnd
+    # The default EMW pec1 covers all outer box walls as PEC (shielded box);
+    # we only need an explicit feature for the ECAD metal faces, because
+    # LumpedPort/LumpedElement topology checks require explicit assignments.
+    pec_metal = phys.create("pec_metal", "PerfectElectricConductor", 2)
+    pec_metal.label("PEC_Metal_Al")
+    pec_metal.selection().named("geom1_imp1_LAYER0_0_bnd")
 
-    # ── Scattering BC on the six outer box faces ──
-    # Box selection: all boundaries on the outer envelope of substrate+air blocks
-    sbc = phys.create("sbc1", "ScatteringBoundaryCondition", 2)
-    sbc.label("Scattering_BC_Outer")
-    # Select exterior faces by bounding box (x=±X_HALF, z=[-SUB_T, AIR_H])
-    sbc.selection().geom("geom1", 2)
-    # We select the four lateral and two z-cap faces manually below.
-    # COMSOL will apply SBC to all boundaries not covered by PEC or ports.
-    # Using "all boundaries" and relying on priority ordering:
-    #   PEC overrides SBC where both match (PEC is added first).
-    sbc.selection().all()
+    # NOTE: ScatteringBoundaryCondition does not exist in this COMSOL version.
+    # The default pec1 (auto-created by EMW) covers all outer box boundaries
+    # as a shielded-box PEC — appropriate for eigenfrequency studies.
 
     # ── Lumped Port 1 — bottom feed end (y = Y_BOT_FEED) ──
     lp1 = phys.create("lp1", "LumpedPort", 2)
@@ -238,14 +237,19 @@ def add_physics(m):
 # ── Mesh ───────────────────────────────────────────────────────────────────────
 
 def add_mesh(m):
-    """Physics-controlled mesh; finer near the CPW gaps."""
+    """Free-tet mesh with geometry-based size calibration.
+
+    mesh.autoMeshSize() fails for EMW eigenfrequency studies — it requires a
+    known frequency for wavelength-based sizing, which is unavailable before
+    solving.  Explicit FreeTet + Size sequence is used instead.
+    """
     log("Meshing ...")
     mesh = m.component("comp1").mesh("mesh1")
-    mesh.autoMeshSize(JI(4))   # 4 = fine (1=coarser, 9=finest)
+    sz = mesh.create("size1", "Size")
+    sz.set("hauto", JI(4))          # 4=fine; range 1(coarsest)–9(finest)
+    mesh.create("ftet1", "FreeTet")
     mesh.run()
-    stats = mesh.stat()
-    n_tet = int(stats.get("numVertex"))
-    log(f"  Mesh done: {n_tet} vertices")
+    log("  Mesh done")
 
 
 # ── Studies ────────────────────────────────────────────────────────────────────

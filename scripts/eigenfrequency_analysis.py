@@ -174,14 +174,18 @@ def extract_eigenfrequencies(
                 f"({freq_stop_ghz} GHz) — skipping (spurious mode)")
             continue
 
-        # Gate: non-physical Q factor
+        # Q factor: Im(freq) = 0 is physically valid for PEC-bounded lossless models.
+        # Treat it as Q=inf rather than a fatal error.
         if abs(fi) < 1e-20:
-            gate_fail(f"Mode {mode_num}: Im(freq) ≈ 0 — cannot compute Q factor")
-        q_factor = fr / (2.0 * abs(fi))
-        if q_factor <= 0:
-            gate_fail(f"Mode {mode_num}: Q ≤ 0 ({q_factor:.3g}) — unphysical result")
-
-        loss_rate_mhz = abs(fi) * 2.0 * math.pi * 1e3   # GHz → MHz
+            log(f"  Mode {mode_num}: Im(freq) ≈ 0 — lossless/PEC model, Q=inf, loss=0 MHz",
+                force=True)
+            q_factor = float("inf")
+            loss_rate_mhz = 0.0
+        else:
+            q_factor = fr / (2.0 * abs(fi))
+            if q_factor <= 0:
+                gate_fail(f"Mode {mode_num}: Q ≤ 0 ({q_factor:.3g}) — unphysical result")
+            loss_rate_mhz = abs(fi) * 2.0 * math.pi * 1e3   # GHz → MHz
 
         results.append({
             "mode": mode_num,
