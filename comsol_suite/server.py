@@ -45,7 +45,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .config import load_config
 from .jobs import JobRegistry
-from .tools import cad, comsol, fitting, circuit_physics, design_params
+from .tools import cad, comsol, fitting, circuit_physics, design_params, qleap
 
 # ── Shared singletons ────────────────────────────────────────────────────────
 CONFIG = load_config()
@@ -554,6 +554,100 @@ def run_coupling_extraction(
     )
 
 
+@mcp.tool()
+def run_parameter_inversion(
+    mph_path: str,
+    param_name: str,
+    param_range: List[float],
+    target_value: float,
+    n_sweep_points: int = 9,
+    param_unit: str = "um",
+    mode_index: int = 1,
+    post_physics: Optional[str] = None,
+    lumped_inductance_H: Optional[float] = None,
+    poly_degree: int = 3,
+    freq_start_ghz: float = 1.0,
+    freq_stop_ghz: float = 20.0,
+    n_modes: int = 5,
+    comsol_host: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    comsol_cores: int = 4,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Sweep a geometry parameter and invert to find the value that hits a target.
+
+    One-shot replacement for the manual sweep → fit → invert loop.  Sweeps
+    ``param_name`` over ``n_sweep_points`` evenly-spaced values in
+    ``param_range``, runs an eigenfrequency study at each point, then inverts
+    a polynomial fit to find the dimension that delivers ``target_value`` GHz.
+
+    Example usage::
+
+        run_parameter_inversion(
+            mph_path   = "model_built.mph",
+            param_name = "l_slider_single",
+            param_range  = [200, 400],     # µm
+            target_value = 6.5,            # GHz
+            n_sweep_points = 9,
+            post_physics = None,           # bare resonator
+        )
+        # → {recommended_value: 312.4, expected_eigenfreq_ghz: 6.499, ...}
+
+    For a transmon qubit, add ``post_physics="transmon"`` and
+    ``lumped_inductance_H`` to convert the bare eigenfrequency to ``fge``
+    before inverting::
+
+        run_parameter_inversion(
+            mph_path   = "qubit_built.mph",
+            param_name = "d_q",
+            param_range  = [150, 350],     # µm (pad diameter)
+            target_value = 5.8,            # GHz target fge
+            post_physics = "transmon",
+            lumped_inductance_H = 11.2e-9, # H
+        )
+        # → {recommended_value: 248.3, expected_fge_ghz: 5.802, ...}
+
+    - **param_range**: ``[min, max]`` in ``param_unit``; endpoints are included.
+    - **mode_index**: 1-based; mode 1 = lowest eigenvalue in search window.
+    - **poly_degree**: polynomial degree for the fit (3 covers most monotonic
+      curves; increase to 4–5 for more complex trends).
+    - **dry_run**: True (default) = show sweep plan + inversion note.  False =
+      launch background job (poll ``get_job_result`` for the recommendation).
+
+    Result keys (real-run)
+    ----------------------
+    ``recommended_value``   : optimal geometry dimension  [param_unit]
+    ``expected_eigenfreq_ghz`` or ``expected_fge_ghz``: predicted observable
+    ``target_ghz``          : the target you passed in
+    ``residual_ghz``        : |predicted − target|
+    ``calibration_csv``     : path to the sweep CSV (keep for records)
+    ``sweep_data``          : raw (param_value, observable) pairs
+    ``note``                : human-readable recommendation string
+    """
+    return comsol.run_parameter_inversion(
+        REGISTRY,
+        mph_path=mph_path,
+        param_name=param_name,
+        param_range=param_range,
+        target_value=target_value,
+        n_sweep_points=n_sweep_points,
+        param_unit=param_unit,
+        mode_index=mode_index,
+        post_physics=post_physics,
+        lumped_inductance_H=lumped_inductance_H,
+        poly_degree=poly_degree,
+        freq_start_ghz=freq_start_ghz,
+        freq_stop_ghz=freq_stop_ghz,
+        n_modes=n_modes,
+        comsol_host=comsol_host,
+        output_dir=output_dir,
+        comsol_cores=comsol_cores,
+        dry_run=dry_run,
+        debug=debug,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Superconducting circuit physics
 # ─────────────────────────────────────────────────────────────────────────────
@@ -827,6 +921,116 @@ def describe_config() -> Dict[str, Any]:
     Useful first call to confirm the suite found the pipeline scripts and data.
     """
     return load_config().as_dict()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# qleap chip simulations (tile pipelines in <repo>/simulations/)
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def qleap_notch_status(unit: Optional[str] = None,
+                       row: Optional[str] = None) -> Dict[str, Any]:
+    """Progress + results of the qleap NDS001 notch-decay pipeline per tile.
+
+    Read-only and instant. Shows, per tile (U0_R0 .. U2_R1 or just
+    ``unit``/``row``): whether the stitched copy and the prepared+gated model
+    exist, which coarse/fine sweep CSVs are done, the metal-verification
+    verdict, and — when extraction has run — the per-qubit notch summary
+    (f_q, f_notch, kappa(f_q), T1, depth) plus any recorded problems.
+    """
+    return qleap.qleap_notch_status(unit=unit, row=row)
+
+
+@mcp.tool()
+def qleap_run_notch_pipeline(
+    unit: str,
+    row: str,
+    letters: str = "ABCD",
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Run the full NDS001 notch pipeline for one tile (background job).
+
+    Resume-safe (existing artifacts are skipped): stitched-model copy ->
+    read-only inspection (coax survey gate) -> S-param prep (selection
+    verification gate, JJ ports as Cable/50ohm) -> metal raster gate ->
+    presence renders -> per-letter coarse sweeps (3.5-7.5 GHz) -> fine
+    windows -> fine sweeps -> notch/kappa/T1 extraction + figure.
+    ~5-6 h per tile. ``letters`` restricts the sweeps (e.g. "A").
+    """
+    return qleap.qleap_run_notch_pipeline(
+        REGISTRY, unit=unit, row=row, letters=letters,
+        dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_run_notch_sweep(
+    unit: str,
+    row: str,
+    letter: str,
+    pass_name: str = "coarse",
+    flist: Optional[str] = None,
+    others: str = "inductor",
+    reciprocity: bool = False,
+    cores: int = 8,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """One JJ-port S-parameter sweep on a prepared tile (background job).
+
+    Excites qubit ``letter``'s JJ as a lumped port (its inductor removed,
+    the other three keep 12 nH unless ``others='open'``) and records
+    S_ii/S_5i/Vport per frequency. ``flist`` overrides the grid with a
+    COMSOL range/list expression, e.g. ``"range(6.3[GHz],0.005[GHz],6.5[GHz])"``
+    — that makes this the right tool for targeted notch-region scans.
+    ~45 s per frequency point.
+    """
+    return qleap.qleap_run_notch_sweep(
+        REGISTRY, unit=unit, row=row, letter=letter, pass_name=pass_name,
+        flist=flist, others=others, reciprocity=reciprocity, cores=cores,
+        dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_extract_notch(unit: str, row: str,
+                        stage: str = "final") -> Dict[str, Any]:
+    """Post-process NDS001 sweep CSVs (foreground, seconds).
+
+    ``stage='window'``: locate coarse notches, write per-letter fine flists.
+    ``stage='final'``: merged kappa(omega) -> notch position/depth, kappa(f_q),
+    T1, readout peak; returns the notch summary and the figure path.
+    """
+    return qleap.qleap_extract_notch(unit=unit, row=row, stage=stage)
+
+
+@mcp.tool()
+def qleap_run_eigen_gqr(
+    unit: str,
+    row: str,
+    run: int,
+    neigs: Optional[int] = None,
+    shift: Optional[str] = None,
+    cores: int = 8,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """RCS001 eigenfrequency solve on a prepared gQR tile model (background).
+
+    ``run=1``: JJ inductors active -> qubit frequencies (then
+    ``qleap_extract_gqr(stage='qubit-freqs')``).
+    ``run=2``: JJ current ports active -> g_QR per readout mode (then
+    ``qleap_extract_gqr(stage='final')``).
+    """
+    return qleap.qleap_run_eigen_gqr(
+        REGISTRY, unit=unit, row=row, run=run, neigs=neigs, shift=shift,
+        cores=cores, dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_extract_gqr(unit: str, row: str,
+                      stage: str = "final") -> Dict[str, Any]:
+    """Post-process RCS001 eigen CSVs (foreground, seconds): qubit
+    frequencies after run 1, g_QR summary after run 2."""
+    return qleap.qleap_extract_gqr(unit=unit, row=row, stage=stage)
 
 
 def main() -> None:

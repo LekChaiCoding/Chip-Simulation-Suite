@@ -379,3 +379,38 @@ fit-results CSV from `fit_stub_sweep` first.
 
 > Tip: call `describe_config()` first to confirm the suite located your pipeline
 > scripts and data.
+
+---
+
+## qleap chip simulations (tile pipelines in `<repo>/simulations/`)
+
+Wrappers for the qleap_circuit_design per-tile pipelines. The qleap repo root
+is resolved as `chip_sim_root.parent` (the suite is vendored at
+`<repo>/resources/COMSOL Simulation Suite`). Solver tools default to
+`dry_run=True` and launch background jobs; extraction/status tools run
+in the foreground (seconds).
+
+### `qleap_notch_status(unit=None, row=None)`
+Read-only progress + results of the NDS001 notch-decay pipeline per tile:
+prepared/gated model presence, sweep CSVs done, metal-verification verdict,
+and the per-qubit notch summary (f_q, f_notch, kappa(f_q), T1, depth).
+
+### `qleap_run_notch_pipeline(unit, row, letters="ABCD", dry_run=True)`
+Full NDS001 tile pipeline (resume-safe): copy -> inspect (coax gate) ->
+prepare (selection-verification gate) -> metal raster gate -> renders ->
+coarse sweeps -> fine windows -> fine sweeps -> extraction. ~5-6 h/tile.
+
+### `qleap_run_notch_sweep(unit, row, letter, pass_name="coarse", flist=None, others="inductor", reciprocity=False, cores=8, dry_run=True)`
+One JJ-port S-parameter sweep on a prepared tile. `flist` accepts a COMSOL
+range/list expression for targeted scans (e.g. a notch window). ~45 s/point.
+
+### `qleap_extract_notch(unit, row, stage="final")`
+NDS001 post-processing: `window` writes fine flists; `final` writes the
+notch summary + kappa(omega) figure and returns them.
+
+### `qleap_run_eigen_gqr(unit, row, run, neigs=None, shift=None, cores=8, dry_run=True)`
+RCS001 eigenfrequency solve: run 1 = qubit frequencies (JJ inductors),
+run 2 = g_QR (JJ current ports).
+
+### `qleap_extract_gqr(unit, row, stage="final")`
+RCS001 post-processing: `qubit-freqs` after run 1, `final` after run 2.
