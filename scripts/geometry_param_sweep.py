@@ -213,19 +213,38 @@ def _run_freqdomain_point(pymodel, freq_points_ghz, port, debug):
 
     rows = []
     for f_ghz in freq_points_ghz:
-        row = {"freq_ghz": f_ghz}
-        for sij in ("S11", "S21", "S12", "S22"):
-            if port == "1" and sij in ("S12", "S22"):
-                continue
-            if port == "2" and sij in ("S11", "S21"):
-                continue
+        # Column order matches abcd_fit.py's positional parser:
+        # col0=param, col1=freq_Hz, col2=S11_re, col3=S11_im,
+        #             col4=S21_re,  col5=S21_im, col6=S12_re, ...
+        # All re/im pairs come first; magnitudes and freq_ghz are appended last.
+        row: dict = {"freq_Hz": f_ghz * 1e9}
+        active = [
+            s for s in ("S11", "S21", "S12", "S22")
+            if not (port == "1" and s in ("S12", "S22"))
+            and not (port == "2" and s in ("S11", "S21"))
+        ]
+        raw: dict = {}
+        for sij in active:
+            comsol_name = f"S{sij[1]}{sij[2]}"
             try:
-                expr = f"abs(emw.S{sij[1]}1)" if sij[2] == "1" else f"abs(emw.S{sij[1]}2)"
-                val_list = _safe_list(pymodel.evaluate(expr, "1", dataset=ds))
-                # Evaluate at the frequency nearest to f_ghz.
-                row[f"|{sij}|"] = val_list[0] if val_list else float("nan")
+                re_list = _safe_list(
+                    pymodel.evaluate(f"real(emw.{comsol_name})", "1", dataset=ds)
+                )
+                im_list = _safe_list(
+                    pymodel.evaluate(f"imag(emw.{comsol_name})", "1", dataset=ds)
+                )
+                re_val = re_list[0] if re_list else float("nan")
+                im_val = im_list[0] if im_list else float("nan")
             except Exception:
-                row[f"|{sij}|"] = float("nan")
+                re_val = im_val = float("nan")
+            raw[sij] = (re_val, im_val)
+            row[f"{sij}_re"] = re_val
+            row[f"{sij}_im"] = im_val
+        # Magnitudes appended after all re/im pairs (keeps positional layout intact)
+        for sij in active:
+            re_val, im_val = raw[sij]
+            row[f"|{sij}|"] = math.sqrt(re_val**2 + im_val**2)
+        row["freq_ghz"] = f_ghz   # human-readable alias, last
         rows.append(row)
 
     return rows

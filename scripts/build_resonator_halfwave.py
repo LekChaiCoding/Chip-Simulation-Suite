@@ -34,13 +34,8 @@ from pathlib import Path
 
 # ── Patchable interface ────────────────────────────────────────────────────────
 OUT_DIR            = "/default"
-PARAM_OVERRIDES    = {
-    "GDS_PATH": "/mnt/smb/HSS/users/Alex/Chip Simulation/COMSOL Simulation Suite/runs/cad_custom_cad_resonator_halfwave-1782106321/resonator_halfwave.gds",
-}
-MATERIAL_OVERRIDES = {
-    "sub_eps_r":    "11.9",
-    "sub_loss_tan": "0",
-}
+PARAM_OVERRIDES    = {"GDS_PATH": "PLACEHOLDER_GDS"}
+MATERIAL_OVERRIDES = {"sub_eps_r": "11.9", "sub_loss_tan": "0"}
 
 # ── Design constants (must match cad_resonator_halfwave.py) ───────────────────
 W_UM       = 5.0        # center conductor width

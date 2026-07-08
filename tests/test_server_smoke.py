@@ -34,6 +34,7 @@ def test_tools_register_on_server():
         "run_stub_length_sweep", "export_touchstone",
         "run_eigenfrequency_study", "run_geometry_param_sweep",
         "run_decay_rate_sweep", "run_coupling_extraction",
+        "run_parameter_inversion",
         # SC circuit physics
         "compute_circuit_params",
         # Design parameter management
@@ -46,4 +47,4 @@ def test_tools_register_on_server():
     }
     missing = expected - names
     assert not missing, f"tools not registered: {missing}"
-    assert len(names) == 26, f"expected 26 tools, got {len(names)}: {sorted(names)}"
+    assert len(names) == 33, f"expected 33 tools, got {len(names)}: {sorted(names)}"

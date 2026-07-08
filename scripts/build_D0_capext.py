@@ -51,14 +51,8 @@ from pathlib import Path
 
 # ── Patchable interface ────────────────────────────────────────────────────────
 OUT_DIR            = "/default"
-PARAM_OVERRIDES    = {
-    "GDS_PATH": "PLACEHOLDER_GDS",
-    "LJJ_nH":  "11.2",
-}
-MATERIAL_OVERRIDES = {
-    "sub_eps_r":    "11.45",   # Si at 4 K (slightly lower than RT value 11.9)
-    "sub_loss_tan": "0",
-}
+PARAM_OVERRIDES    = {"GDS_PATH": "PLACEHOLDER_GDS", "LJJ_nH": "11.2"}
+MATERIAL_OVERRIDES = {"sub_eps_r": "11.45", "sub_loss_tan": "0"}  # Si at 4 K
 
 # ── Device / geometry constants ────────────────────────────────────────────────
 H_UM      = 300.0    # wafer thickness (µm)

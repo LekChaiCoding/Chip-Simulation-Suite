@@ -2,6 +2,9 @@
 # Every tool invocation writes here (logs, generated GDS, fit CSVs, figures).
 # These can be large and are reproducible, so they are never committed.
 runs/
+*.log
+**/log/
+**/log_*/
 
 # ── Local machine config ─────────────────────────────────────────────────────
 # Each lab mate copies config/paths.example.toml -> config/paths.toml and edits

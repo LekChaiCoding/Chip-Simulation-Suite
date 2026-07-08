@@ -1202,6 +1202,279 @@ def run_decay_rate_sweep(
     return {"job_id": job.job_id, "status": job.status}
 
 
+def run_parameter_inversion(
+    registry: JobRegistry,
+    mph_path: str,
+    param_name: str,
+    param_range: List[float],
+    target_value: float,
+    n_sweep_points: int = 9,
+    param_unit: str = "um",
+    mode_index: int = 1,
+    post_physics: Optional[str] = None,
+    lumped_inductance_H: Optional[float] = None,
+    poly_degree: int = 3,
+    freq_start_ghz: float = 1.0,
+    freq_stop_ghz: float = 20.0,
+    n_modes: int = 5,
+    comsol_host: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    comsol_cores: int = 4,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Sweep a geometry parameter and invert to find the value that hits a target.
+
+    One-shot wrapper for the sweep → polynomial-fit → invert workflow:
+
+      1. Runs ``geometry_param_sweep.py`` (eigenfrequency study) over
+         ``n_sweep_points`` evenly-spaced values in ``param_range``.
+      2. Reads the resulting CSV and extracts ``freq_ghz`` for ``mode_index``.
+      3. Optionally converts the raw eigenfrequency to ``fge`` via transmon
+         perturbation theory if ``post_physics="transmon"`` is set.
+      4. Fits a degree-``poly_degree`` polynomial and inverts to find the
+         ``param_name`` value where the observable ≈ ``target_value`` [GHz].
+
+    The result is the recommended geometry dimension to target — no COMSOL
+    iteration needed.
+
+    Parameters
+    ----------
+    mph_path
+        Built .mph with the target geometry parameter defined.
+    param_name
+        COMSOL parameter to invert (e.g. ``"l_slider_single"``, ``"d_q"``).
+    param_range
+        ``[min, max]`` in ``param_unit`` to sweep.
+    target_value
+        Target observable in GHz (raw eigenfrequency, or ``fge`` when
+        ``post_physics="transmon"``).
+    n_sweep_points
+        Number of evenly-spaced sweep values (default 9; use 7–11 for a
+        coarse calibration sweep).
+    param_unit
+        COMSOL unit string (default ``"um"``).  Use ``"deg"`` for angles,
+        ``"nH"`` for inductance, etc.
+    mode_index
+        1-based eigenmode index to track (mode 1 = lowest in search window).
+    post_physics
+        ``"transmon"`` to convert eigenfrequency → ``fge`` before inverting.
+        Requires ``lumped_inductance_H``.  Use ``None`` (default) for bare
+        resonators where the eigenfrequency IS the target observable.
+    lumped_inductance_H
+        Josephson inductance [H] — required when ``post_physics="transmon"``.
+    poly_degree
+        Polynomial degree for the calibration fit (default 3).
+    freq_start_ghz / freq_stop_ghz
+        Eigenvalue search window.  Tune so the target mode stays inside.
+    n_modes
+        Number of eigenvalues per sweep point (default 5).
+    dry_run
+        True (default) = plan only.  False = launch background job.
+
+    Returns
+    -------
+    dict
+        *Dry-run*: sweep plan + ``inversion`` sub-dict describing post-processing.
+        *Real-run*: ``{job_id, status}`` — poll ``get_job_result`` for
+        ``{ok, recommended_value, param_unit, expected_freq_ghz, target_ghz,
+        residual_ghz, calibration_csv, sweep_data, note}``.
+    """
+    # ── Validate ──────────────────────────────────────────────────────────────
+    if len(param_range) != 2 or float(param_range[0]) >= float(param_range[1]):
+        return {"ok": False,
+                "error": "param_range must be [min, max] with min < max"}
+    if n_sweep_points < 3:
+        return {"ok": False, "error": "n_sweep_points must be ≥ 3"}
+    if post_physics is not None and post_physics not in ("transmon",):
+        return {"ok": False,
+                "error": f"post_physics must be 'transmon' or None, got {post_physics!r}"}
+    if post_physics == "transmon" and lumped_inductance_H is None:
+        return {"ok": False,
+                "error": "lumped_inductance_H is required when post_physics='transmon'"}
+
+    # ── Build linspace of sweep values ────────────────────────────────────────
+    lo, hi = float(param_range[0]), float(param_range[1])
+    param_values = [
+        lo + (hi - lo) * i / (n_sweep_points - 1)
+        for i in range(n_sweep_points)
+    ]
+
+    cfg = load_config()
+    src = cfg.script("comsol_geometry_sweep")
+    out = (Path(output_dir) if output_dir
+           else cfg.runs_dir / f"param_inversion_{param_name}")
+    csv_out = out / f"{param_name}_inversion_sweep.csv"
+
+    argv = (
+        [cfg.python_bin, src,
+         "--param-name", param_name,
+         "--param-values"] + [str(round(v, 6)) for v in param_values] + [
+         "--param-unit", param_unit,
+         "--study-type", "eigenfrequency",
+         "--n-modes", str(n_modes),
+         "--freq-start", str(freq_start_ghz),
+         "--freq-stop", str(freq_stop_ghz),
+         "--cores", str(comsol_cores),
+         "--out", str(csv_out)]
+    )
+    if debug:
+        argv = list(argv) + ["--debug"]
+
+    patches_plan = {
+        r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+        r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+        r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+    }
+    mph_plan = [str(out / f"{param_name}_{round(v, 6)}.mph") for v in param_values]
+
+    if dry_run:
+        plan = _preflight("run_parameter_inversion", argv, patches_plan,
+                          comsol_host, cfg.comsol_port, mph_plan)
+        plan["inversion"] = {
+            "param_range": list(param_range),
+            "n_sweep_points": n_sweep_points,
+            "param_values": [round(v, 4) for v in param_values],
+            "target_value_ghz": target_value,
+            "mode_index": mode_index,
+            "post_physics": post_physics,
+            "poly_degree": poly_degree,
+            "note": (
+                f"After sweep: extract mode {mode_index} freq_ghz vs {param_name}, "
+                f"fit degree-{poly_degree} poly, invert to find {param_name} where "
+                f"{'fge' if post_physics == 'transmon' else 'eigenfreq'} ≈ "
+                f"{target_value} GHz."
+            ),
+        }
+        return plan
+
+    # ── Real-run worker ───────────────────────────────────────────────────────
+    def worker(job: Job) -> Dict[str, Any]:
+        import csv as _csv
+        import math
+
+        out.mkdir(parents=True, exist_ok=True)
+        patched = patch_script(
+            src,
+            Path(job.run_dir) / "_inversion_sweep_patched.py",
+            {
+                r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+                r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+                r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+                r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+            },
+        )
+        res = run_command(
+            [cfg.python_bin, str(patched)] + list(argv)[2:],
+            log_path=Path(job.log_path),
+            cwd=out,
+            timeout_s=21600,
+            debug=debug,
+        )
+        if not res.ok:
+            return {
+                "ok": False,
+                "error": f"Geometry sweep failed (rc={res.returncode}); see run.log",
+                "returncode": res.returncode,
+            }
+        if not csv_out.is_file():
+            return {"ok": False, "error": f"Sweep CSV not produced: {csv_out}"}
+
+        with open(csv_out, newline="") as fh:
+            rows = list(_csv.DictReader(fh))
+        if not rows:
+            return {"ok": False, "error": "Sweep CSV is empty"}
+
+        # Extract (param_value → freq_ghz) for the requested mode index.
+        mode_data: Dict[float, float] = {}
+        for row in rows:
+            try:
+                p_val = float(row[param_name])
+                m_num = int(float(row.get("mode", 1)))
+                freq  = float(row["freq_ghz"])
+            except (KeyError, ValueError):
+                continue
+            if m_num == mode_index and not math.isnan(freq):
+                mode_data[p_val] = freq
+
+        if len(mode_data) < 3:
+            return {
+                "ok": False,
+                "error": (
+                    f"Only {len(mode_data)} data point(s) for mode {mode_index}; "
+                    f"need ≥ 3 for a degree-{poly_degree} fit. "
+                    f"Widen freq_start/freq_stop or increase n_sweep_points."
+                ),
+                "calibration_csv": str(csv_out),
+                "raw_rows": len(rows),
+            }
+
+        p_sorted = sorted(mode_data)
+        f_sorted = [mode_data[p] for p in p_sorted]
+
+        # Optional transmon post-physics: convert f0 → fge.
+        if post_physics == "transmon":
+            from .circuit_physics import compute_circuit_params
+            y_sorted = []
+            for f_ghz in f_sorted:
+                params = compute_circuit_params(
+                    L_H=lumped_inductance_H, f0_Hz=f_ghz * 1e9
+                )
+                fge = params.get("fq_Hz")
+                y_sorted.append(fge / 1e9 if fge is not None else f_ghz)
+            y_label = "fge_ghz"
+        else:
+            y_sorted = f_sorted
+            y_label = "eigenfreq_ghz"
+
+        # Polynomial inversion.
+        from .circuit_physics import polynomial_inverse
+        roots = polynomial_inverse(p_sorted, y_sorted, target_value, degree=poly_degree)
+
+        if not roots:
+            return {
+                "ok": False,
+                "error": (
+                    f"No root found for {y_label} = {target_value} GHz in "
+                    f"{param_name} ∈ [{param_range[0]}, {param_range[1]}] {param_unit}. "
+                    f"Observed range: [{min(y_sorted):.4f}, {max(y_sorted):.4f}] GHz. "
+                    f"Widen param_range or check mode_index."
+                ),
+                "calibration_csv": str(csv_out),
+                "sweep_data": {param_name: p_sorted, y_label: y_sorted},
+            }
+
+        recommended = roots[0]  # first (and usually unique) root in range
+
+        # Evaluate poly at recommended to report expected output.
+        import numpy as _np
+        coeffs   = _np.polyfit(p_sorted, y_sorted, poly_degree)
+        y_at_rec = float(_np.polyval(coeffs, recommended))
+        residual = abs(y_at_rec - target_value)
+
+        return {
+            "ok": True,
+            "recommended_value": round(recommended, 4),
+            "param_name": param_name,
+            "param_unit": param_unit,
+            f"expected_{y_label}": round(y_at_rec, 6),
+            "target_ghz": target_value,
+            "residual_ghz": round(residual, 6),
+            "all_roots": [round(r, 4) for r in roots],
+            "calibration_csv": str(csv_out),
+            "sweep_data": {param_name: p_sorted, y_label: y_sorted},
+            "note": (
+                f"Set {param_name} = {round(recommended, 4)} [{param_unit}] "
+                f"to achieve {y_label} ≈ {round(y_at_rec, 4)} GHz "
+                f"(target {target_value} GHz, "
+                f"residual {round(residual * 1000, 2)} MHz)."
+            ),
+        }
+
+    job = registry.submit("run_parameter_inversion", worker, background=True)
+    return {"job_id": job.job_id, "status": job.status}
+
+
 def export_touchstone(
     registry: JobRegistry,
     csv_path: str,
