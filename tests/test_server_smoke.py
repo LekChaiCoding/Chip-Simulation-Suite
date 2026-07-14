@@ -31,6 +31,7 @@ def test_tools_register_on_server():
         "generate_cad", "verify_cad", "run_custom_cad", "assemble_geometry",
         # COMSOL stage
         "comsol_health_check", "build_comsol_model", "run_custom_comsol_build",
+        "validate_geometry",
         "run_stub_length_sweep", "export_touchstone",
         "run_eigenfrequency_study", "run_geometry_param_sweep",
         "run_decay_rate_sweep", "run_coupling_extraction",
@@ -44,7 +45,20 @@ def test_tools_register_on_server():
         "fit_stub_sweep", "analyze_dispersion",
         # Job management
         "get_job_status", "get_job_result", "list_jobs", "describe_config",
+        # qleap NDS001 / RCS001 tile pipelines
+        "qleap_notch_status", "qleap_run_notch_pipeline", "qleap_run_notch_sweep",
+        "qleap_extract_notch", "qleap_run_nt2_probe",
+        "qleap_run_eigen_gqr", "qleap_extract_gqr",
+        # qleap NT002 filter-retuning campaign
+        "qleap_nt2_linear_retune", "qleap_nt2_purcell_check",
+        "qleap_nt2_ratio_retune", "qleap_nt2_ratio_gap_check",
+        "qleap_nt2_ratio_geometry_gate", "qleap_nt2_run_ratio_trade_probe",
+        "qleap_nt2_build_merged_model", "qleap_nt2_verify_merged_notches",
+        "qleap_nt2_publish_optimized",
+        # qleap CCT001 cable-coupling tuning
+        "qleap_cct001_tune_width", "qleap_cct001_rollout_letter",
     }
     missing = expected - names
     assert not missing, f"tools not registered: {missing}"
-    assert len(names) == 33, f"expected 33 tools, got {len(names)}: {sorted(names)}"
+    extra = names - expected
+    assert not extra, f"unexpected tools not in expected set: {sorted(extra)}"

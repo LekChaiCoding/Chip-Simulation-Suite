@@ -45,7 +45,8 @@ from mcp.server.fastmcp import FastMCP
 
 from .config import load_config
 from .jobs import JobRegistry
-from .tools import cad, comsol, fitting, circuit_physics, design_params, qleap
+from .tools import (cad, comsol, fitting, circuit_physics, design_params,
+                    qleap, qleap_nt2, qleap_cct001)
 
 # ── Shared singletons ────────────────────────────────────────────────────────
 CONFIG = load_config()
@@ -303,6 +304,46 @@ def run_custom_comsol_build(
         param_overrides_var=param_overrides_var,
         material_overrides_var=material_overrides_var,
         comsol_host=comsol_host, comsol_cores=comsol_cores,
+        dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def validate_geometry(
+    mph_path: str,
+    checker_script: str,
+    mph_path_var: Optional[str] = "MPH_PATH",
+    reference_vertices_csv: Optional[str] = None,
+    reference_vertices_csv_var: Optional[str] = "REFERENCE_VERTICES_CSV",
+    extra_args: Optional[List[str]] = None,
+    comsol_host: Optional[str] = None,
+    comsol_cores: int = 4,
+    output_dir: Optional[str] = None,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Validate a built .mph against any user-supplied checker script.
+
+    Device-agnostic gate: run *any* checker that either (a) defines a
+    module-level ``MPH_PATH`` string constant (patched by this tool,
+    mirroring ``run_custom_comsol_build``'s ``OUT_DIR`` convention) plus
+    ``main() -> int`` / ``sys.exit(main())``, or (b) accepts the model path
+    as its first positional CLI argument (set ``mph_path_var=None``) and
+    exits 0 on pass, e.g.
+    ``simulations/stitching/scripts/verify_metal_raster.py``.
+
+    Needs a live COMSOL connection — defaults to ``dry_run=True`` (validate +
+    health-check only); ``dry_run=False`` launches as a background job.
+
+    Returns ``{dry_run, would_run, patches_applied, comsol_health, ready}`` in
+    dry-run mode, or ``{job_id, status}`` to poll — ``get_job_result`` yields
+    ``{ok, passed, returncode, report, log_tail}``.
+    """
+    return comsol.validate_geometry(
+        REGISTRY, mph_path=mph_path, checker_script=checker_script,
+        mph_path_var=mph_path_var, reference_vertices_csv=reference_vertices_csv,
+        reference_vertices_csv_var=reference_vertices_csv_var,
+        extra_args=extra_args, comsol_host=comsol_host,
+        comsol_cores=comsol_cores, output_dir=output_dir,
         dry_run=dry_run, debug=debug)
 
 
@@ -1067,6 +1108,171 @@ def qleap_extract_gqr(unit: str, row: str,
     """Post-process RCS001 eigen CSVs (foreground, seconds): qubit
     frequencies after run 1, g_QR summary after run 2."""
     return qleap.qleap_extract_gqr(unit=unit, row=row, stage=stage)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NT002 filter retuning (simulations/NotchTuning002/) — current campaign
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def qleap_nt2_linear_retune(tile: str, letter: str, force: bool = False,
+                           plan_only: bool = False, dry_run: bool = True,
+                           debug: bool = False) -> Dict[str, Any]:
+    """NT002C one-shot linear notch retune for one (tile, letter).
+
+    ``plan_only=True`` plans the knob move synchronously (no COMSOL, nothing
+    written) via the script's own ``--dry-run``. Otherwise does one
+    inductor-mode verification solve as a background job."""
+    return qleap_nt2.qleap_nt2_linear_retune(
+        REGISTRY, tile=tile, letter=letter, force=force,
+        plan_only=plan_only, dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_nt2_purcell_check(tile: str, letters: str = "ABCD",
+                           csv_override: Optional[str] = None,
+                           no_plot: bool = False, record_suffix: str = "LINEAR",
+                           debug: bool = False) -> Dict[str, Any]:
+    """Foreground kappa(f_q) -> Purcell T1 gate from existing linear/ratio
+    probe CSVs. ``record_suffix`` selects ``"LINEAR"`` or ``"RATIO"``
+    records."""
+    return qleap_nt2.qleap_nt2_purcell_check(
+        tile=tile, letters=letters, csv_override=csv_override,
+        no_plot=no_plot, record_suffix=record_suffix, debug=debug)
+
+
+@mcp.tool()
+def qleap_nt2_ratio_retune(tile: str, letter: str, force: bool = False,
+                          plan_only: bool = False, dry_run: bool = True,
+                          debug: bool = False) -> Dict[str, Any]:
+    """NT002D ratio-trade (meander/straight arm-length) retune driver:
+    resume-safe, budgeted route walk. ``plan_only=True`` plans synchronously
+    via the script's own ``--dry-run`` (confirmed to stop before any solve)."""
+    return qleap_nt2.qleap_nt2_ratio_retune(
+        REGISTRY, tile=tile, letter=letter, force=force,
+        plan_only=plan_only, dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_nt2_ratio_gap_check(tile: str, letter_model: str,
+                             param_overrides: Dict[str, str],
+                             letters: str = "ABCD", min_gap_um: float = 10.0,
+                             window_um: float = 800.0, tag: str = "candidate",
+                             cores: int = 4, no_render: bool = False,
+                             debug: bool = False) -> Dict[str, Any]:
+    """10 um clearance gate for a ratio-trade candidate (foreground; needs a
+    live COMSOL session, no solve). Always exits 0 — the real verdict is in
+    ``result["report"]["verdict"]``, not the return code."""
+    return qleap_nt2.qleap_nt2_ratio_gap_check(
+        tile=tile, letter_model=letter_model, param_overrides=param_overrides,
+        letters=letters, min_gap_um=min_gap_um, window_um=window_um,
+        tag=tag, cores=cores, no_render=no_render, debug=debug)
+
+
+@mcp.tool()
+def qleap_nt2_ratio_geometry_gate(tile: str, letter_model: str,
+                                 param_overrides: Dict[str, str],
+                                 letters: str = "ABCD", tag: str = "candidate",
+                                 cores: int = 4, area_tol_um2: float = 2.0,
+                                 length_tol_um: float = 0.5,
+                                 no_render: bool = False,
+                                 debug: bool = False) -> Dict[str, Any]:
+    """Topology-aware conductor/corridor conservation gate (foreground; needs
+    a live COMSOL session, no solve). Return code 2 is a legitimate FAIL
+    verdict, not a crash — see ``result["verdict"]``."""
+    return qleap_nt2.qleap_nt2_ratio_geometry_gate(
+        tile=tile, letter_model=letter_model, param_overrides=param_overrides,
+        letters=letters, tag=tag, cores=cores, area_tol_um2=area_tol_um2,
+        length_tol_um=length_tol_um, no_render=no_render, debug=debug)
+
+
+@mcp.tool()
+def qleap_nt2_run_ratio_trade_probe(tile: str, letter: str, tag: str,
+                                    center_ghz: float,
+                                    param_overrides: Dict[str, str],
+                                    others: str = "inductor",
+                                    half_mhz: float = 250.0, step_mhz: float = 10.0,
+                                    cores: int = 8, save_model: Optional[str] = None,
+                                    dry_run: bool = True,
+                                    debug: bool = False) -> Dict[str, Any]:
+    """Gated ratio-trade probe: the geometry gate must PASS before any solve
+    or model save. Return code 3 means it completed but was not verified
+    (see ``result["verified"]``), not a crash."""
+    return qleap_nt2.qleap_nt2_run_ratio_trade_probe(
+        REGISTRY, tile=tile, letter=letter, tag=tag, center_ghz=center_ghz,
+        param_overrides=param_overrides, others=others, half_mhz=half_mhz,
+        step_mhz=step_mhz, cores=cores, save_model=save_model,
+        dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_nt2_build_merged_model(tile: str, with_notch_finals: bool = False,
+                                 output_path: Optional[str] = None,
+                                 cores: int = 4, plan_only: bool = False,
+                                 dry_run: bool = True,
+                                 debug: bool = False) -> Dict[str, Any]:
+    """Build the NT002 merged per-tile S-parameter model. ``with_notch_finals``
+    also applies each letter's accepted filter knobs. ``plan_only=True`` runs
+    the script's own ``--dry-run`` (real knob-provenance report, no COMSOL)
+    synchronously."""
+    return qleap_nt2.qleap_nt2_build_merged_model(
+        REGISTRY, tile=tile, with_notch_finals=with_notch_finals,
+        output_path=output_path, cores=cores, plan_only=plan_only,
+        dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_nt2_verify_merged_notches(tile: str, model_path: Optional[str] = None,
+                                    cores: int = 8, reanalyze: bool = False,
+                                    skip_fr: bool = False, dry_run: bool = True,
+                                    debug: bool = False) -> Dict[str, Any]:
+    """Final merged-context acceptance gate: Purcell T1 + notch offset (and
+    dressed f_r unless ``skip_fr``) per letter, on the merged tile model."""
+    return qleap_nt2.qleap_nt2_verify_merged_notches(
+        REGISTRY, tile=tile, model_path=model_path, cores=cores,
+        reanalyze=reanalyze, skip_fr=skip_fr, dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_nt2_publish_optimized(tile: str, debug: bool = False) -> Dict[str, Any]:
+    """Publish an accepted merged tile model to
+    ``simulations/OptimizedModels/{tile}/`` (foreground: file I/O + sha256,
+    no COMSOL). Writes outside NotchTuning002 by design; refuses to
+    overwrite an already-published tile."""
+    return qleap_nt2.qleap_nt2_publish_optimized(tile=tile, debug=debug)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CCT001 cable-coupling tuning (simulations/CableCouplingTuning001/)
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def qleap_cct001_tune_width(tile: str, letter: str, cores: int = 8,
+                           max_trials: int = 8, spoke_count: int = 8,
+                           seed_width_um: Optional[float] = None,
+                           width_bounds_um: Optional[List[float]] = None,
+                           dry_run: bool = True, debug: bool = False) -> Dict[str, Any]:
+    """Log-log secant sweep of back-spoke width to hit gamma/2pi = 500 Hz
+    +/-5%. ``width_bounds_um`` overrides the default width ceiling (recovery
+    pass); ``spoke_count`` != 8 runs in its own trial/state namespace."""
+    return qleap_cct001.qleap_cct001_tune_width(
+        REGISTRY, tile=tile, letter=letter, cores=cores, max_trials=max_trials,
+        spoke_count=spoke_count, seed_width_um=seed_width_um,
+        width_bounds_um=width_bounds_um, dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_cct001_rollout_letter(tile: str, letter: str, cores: int = 8,
+                               force_n: Optional[int] = None,
+                               width_bounds_um: Optional[List[float]] = None,
+                               max_trials: Optional[int] = None,
+                               dry_run: bool = True,
+                               debug: bool = False) -> Dict[str, Any]:
+    """End-to-end CCT001 rollout: ensure pristine copy -> width campaign
+    (with n+/-1 spoke-count fallback unless ``force_n``) -> fine verify ->
+    broad-sweep straight-line gate."""
+    return qleap_cct001.qleap_cct001_rollout_letter(
+        REGISTRY, tile=tile, letter=letter, cores=cores, force_n=force_n,
+        width_bounds_um=width_bounds_um, max_trials=max_trials,
+        dry_run=dry_run, debug=debug)
 
 
 def main() -> None:

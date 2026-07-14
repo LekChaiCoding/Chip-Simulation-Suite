@@ -791,6 +791,126 @@ def run_custom_comsol_build(
 # ─────────────────────────────────────────────────────────────────────────────
 # Touchstone export
 # ─────────────────────────────────────────────────────────────────────────────
+def validate_geometry(
+    registry: JobRegistry,
+    mph_path: str,
+    checker_script: str,
+    mph_path_var: Optional[str] = "MPH_PATH",
+    reference_vertices_csv: Optional[str] = None,
+    reference_vertices_csv_var: Optional[str] = "REFERENCE_VERTICES_CSV",
+    extra_args: Optional[List[str]] = None,
+    comsol_host: Optional[str] = None,
+    comsol_cores: int = 4,
+    output_dir: Optional[str] = None,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Validate a built .mph against any user-supplied checker script.
+
+    Device-agnostic gate: the mandatory check before trusting a solve. Unlike
+    ``verify_cad`` (which imports a GDS checker in-process — no COMSOL needed),
+    this tool needs a live COMSOL/``mph`` connection to open the model, so it
+    follows the COMSOL-stage convention: defaults to ``dry_run=True`` and
+    launches real runs as a background job.
+
+    Two calling conventions are supported, so existing checker scripts don't
+    need to be rewritten:
+
+    1. **Patchable-variable convention** (``mph_path_var`` set, the default
+       ``"MPH_PATH"``): the checker script defines a module-level ``MPH_PATH``
+       string constant (and optionally ``REFERENCE_VERTICES_CSV``), a
+       ``main() -> int`` (0 = pass), and ends with ``sys.exit(main())``. This
+       tool patches a temporary copy of the script exactly like
+       ``run_custom_comsol_build`` patches ``OUT_DIR`` — the original is never
+       touched.
+    2. **Positional-argument convention** (``mph_path_var=None``): the checker
+       already accepts the model path as its first CLI argument and exits 0 on
+       pass — e.g. ``simulations/stitching/scripts/verify_metal_raster.py``.
+       The script is run unmodified with ``mph_path`` prepended to
+       ``extra_args``.
+
+    Parameters
+    ----------
+    mph_path
+        Built .mph to validate (e.g. from ``build_comsol_model`` or
+        ``run_custom_comsol_build``).
+    checker_script
+        Absolute path to the checker script.
+    mph_path_var
+        Module-level variable name the checker uses for the model path.
+        Set to ``None`` to use the positional-argument convention instead.
+    reference_vertices_csv / reference_vertices_csv_var
+        Optional reference-geometry CSV and the variable name the checker
+        expects it under (patchable-variable convention only).
+    extra_args
+        Extra CLI arguments appended after any positional ``mph_path``
+        (e.g. ``["--format", "arc"]`` for ``verify_metal_raster.py``).
+    comsol_cores
+        COMSOL solver thread count (default 4).
+    dry_run
+        If True (default), validate + health-check only. Set False to launch.
+
+    Returns
+    -------
+    dict
+        *Dry-run*: ``{dry_run, would_run, patches_applied, comsol_health, ready}``
+        *Real-run*: ``{job_id, status}`` — poll ``get_job_result`` for
+        ``{ok, returncode, passed, report, log_tail}``.
+    """
+    cfg = load_config()
+    src = Path(checker_script)
+    if not src.is_file():
+        return {"ok": False, "error": f"checker script not found: {src}"}
+    if not Path(mph_path).is_file():
+        return {"ok": False, "error": f"mph_path not found: {mph_path}"}
+
+    out = Path(output_dir) if output_dir else cfg.runs_dir / f"validate_geometry_{src.stem}"
+    extra = list(extra_args or [])
+
+    patches_plan: Dict[str, str] = {}
+    if mph_path_var is not None:
+        patches_plan[rf"^{re.escape(mph_path_var)}\s*=.*$"] = (
+            f'{mph_path_var} = r"{mph_path}"'
+        )
+        if reference_vertices_csv and reference_vertices_csv_var:
+            patches_plan[rf"^{re.escape(reference_vertices_csv_var)}\s*=.*$"] = (
+                f'{reference_vertices_csv_var} = r"{reference_vertices_csv}"'
+            )
+        argv = [cfg.python_bin, src] + extra
+    else:
+        argv = [cfg.python_bin, src, mph_path] + extra
+
+    if dry_run:
+        return _preflight("validate_geometry", argv, patches_plan,
+                          comsol_host, cfg.comsol_port, [])
+
+    def worker(job: Job) -> Dict[str, Any]:
+        out.mkdir(parents=True, exist_ok=True)
+        if mph_path_var is not None:
+            patched = patch_script(
+                src, Path(job.run_dir) / f"_{src.stem}_patched.py",
+                patches_plan, require_all=False,
+            )
+            real_argv = [cfg.python_bin, str(patched)] + extra
+        else:
+            real_argv = [cfg.python_bin, str(src), mph_path] + extra
+        res = run_command(real_argv, log_path=Path(job.log_path), cwd=out,
+                          timeout_s=1800, debug=debug)
+        reports = sorted(str(p) for p in out.rglob("*.json"))
+        return {
+            "ok": res.ok,
+            "passed": res.returncode == 0,
+            "returncode": res.returncode,
+            "checker_script": str(src),
+            "report": reports,
+            "log_tail": res.log_tail(30),
+            "error": None if res.ok else f"validate_geometry failed (see run.log)",
+        }
+
+    job = registry.submit("validate_geometry", worker, background=True)
+    return {"job_id": job.job_id, "status": job.status}
+
+
 def run_coupling_extraction(
     eigenfreq_csv: str,
     mode1_path_col: str,

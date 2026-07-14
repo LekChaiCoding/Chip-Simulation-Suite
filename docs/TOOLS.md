@@ -169,9 +169,32 @@ so you can open them in the COMSOL GUI to verify geometry, mesh, and solutions.
 
 ---
 
-### `validate_geometry(mph_path, reference_vertices_csv=None, comsol_host=None, dry_run=True)`
-Validate a built model (face counts + full vertex multiset) — the mandatory gate
-before trusting a solve. Pass the `mph_path` from `build_comsol_model` result.
+### `validate_geometry(mph_path, checker_script, mph_path_var="MPH_PATH", reference_vertices_csv=None, reference_vertices_csv_var="REFERENCE_VERTICES_CSV", extra_args=None, comsol_host=None, comsol_cores=4, output_dir=None, dry_run=True, debug=False)`
+Validate a built `.mph` against any user-supplied checker script — the
+mandatory gate before trusting a solve. Needs a live COMSOL connection (unlike
+`verify_cad`, which checks a GDS in-process with no COMSOL needed), so it
+follows the COMSOL-stage convention: `dry_run=True` by default, real runs
+launch as a background job.
+
+Two calling conventions:
+
+- **Patchable-variable** (`mph_path_var` set, default `"MPH_PATH"`): the
+  checker defines a module-level `MPH_PATH` string constant (and optionally
+  `REFERENCE_VERTICES_CSV`), a `main() -> int` (0 = pass), and ends with
+  `sys.exit(main())`. This tool patches a temporary copy exactly like
+  `run_custom_comsol_build` patches `OUT_DIR` — the original is never touched.
+- **Positional-argument** (`mph_path_var=None`): the checker already accepts
+  the model path as its first CLI argument and exits 0 on pass — e.g.
+  `simulations/stitching/scripts/verify_metal_raster.py` (`extra_args=["--format", "arc"]`).
+
+- **Returns:** `{ok, passed, returncode, checker_script, report, log_tail}`
+  (poll `get_job_result` for the real-run result).
+
+```text
+> validate_geometry(mph_path="model_built.mph",
+    checker_script=".../verify_metal_raster.py", mph_path_var=None,
+    extra_args=["--format", "arc"], dry_run=True)
+```
 
 ### `run_eigenfrequency_study(mph_path, n_modes=5, freq_start_ghz=1.0, freq_stop_ghz=20.0, extract_fields=False, path_selections=None, node_groups=None, comsol_host=None, output_dir=None, comsol_cores=4, dry_run=True, debug=False)`
 Find resonance frequencies and Q-factors via the COMSOL eigenvalue solver (~5 min).
@@ -234,6 +257,27 @@ Jaynes-Cummings energy-partition analysis.
 - **`mode1_path_col` / `mode2_path_col`:** CSV column names for |E| path integrals.
 - **`lumped_inductance_H`:** inductance of the lumped element (JJ, coupling inductor).
 - **Returns:** `{g_Hz, g_MHz, chi_Hz, chi_MHz, anharmonicity_Hz, f_mode1_Hz, f_mode2_Hz, mode_labels, participation_ratio, error}`
+
+### `run_parameter_inversion(mph_path, param_name, param_range, target_value, n_sweep_points=9, param_unit="um", mode_index=1, post_physics=None, lumped_inductance_H=None, poly_degree=3, freq_start_ghz=1.0, freq_stop_ghz=20.0, n_modes=5, comsol_host=None, output_dir=None, comsol_cores=4, dry_run=True, debug=False)`
+One-shot **sweep → polynomial-fit → invert** wrapper: runs an eigenfrequency
+sweep over `n_sweep_points` evenly-spaced values in `param_range`, extracts
+`mode_index`'s frequency, optionally converts it to `fge` via transmon
+perturbation theory (`post_physics="transmon"`, requires `lumped_inductance_H`),
+fits a degree-`poly_degree` polynomial, and inverts to the `param_name` value
+that hits `target_value` GHz — no manual sweep/fit/invert loop needed.
+
+- **Returns (real-run):** `{ok, recommended_value, param_name, param_unit,
+  expected_<eigenfreq|fge>_ghz, target_ghz, residual_ghz, all_roots,
+  calibration_csv, sweep_data, note}`.
+
+```text
+> run_parameter_inversion(mph_path="model_built.mph", param_name="l_slider_single",
+    param_range=[200, 400], target_value=6.5, n_sweep_points=9, dry_run=True)
+{ "dry_run": true, "inversion": {"param_values": [200, ..., 400],
+  "target_value_ghz": 6.5, "note": "After sweep: extract mode 1 freq_ghz vs
+  l_slider_single, fit degree-3 poly, invert to find l_slider_single where
+  eigenfreq ≈ 6.5 GHz." } }
+```
 
 ### `export_touchstone(csv_path, output_path=None, dry_run=True, debug=False)`
 Convert an extracted S-parameter CSV to a Touchstone `.s2p` file. Safe to run
@@ -414,3 +458,102 @@ run 2 = g_QR (JJ current ports).
 
 ### `qleap_extract_gqr(unit, row, stage="final")`
 RCS001 post-processing: `qubit-freqs` after run 1, `final` after run 2.
+
+### `qleap_run_nt2_probe(tag, others="open", center_ghz=4.15, half_mhz=200.0, step_mhz=5.0, param_overrides=None, save_model=None, cores=8, dry_run=True, debug=False)`
+Run one bounded, resume-safe NotchTuning002 U0_R0-A empirical tuning probe
+(`run_a_probe.py`, the superseded NT002A driver). `param_overrides` maps
+approved COMSOL parameter names to expressions, e.g.
+`{"g_readout1_l_end": "590[um]"}`; the wrapper enforces the approved
+parameter envelope, 16-probe budget, global COMSOL lock, and
+skip-completed behavior. `save_model` (only for the winning candidate) must
+resolve inside `simulations/NotchTuning002`.
+
+---
+
+## NT002 filter retuning (`simulations/NotchTuning002/`)
+
+Wrappers for the **current** notch-retuning campaign — one tier above
+`qleap_run_nt2_probe` above. These subprocess the campaign drivers directly
+(no path patching needed; the scripts resolve all paths from `--tile`/
+`--letter` via the repo layout), following the same `dry_run=True` /
+`JobRegistry` conventions. Three of them use a non-zero return code to carry
+a legitimate PASS/FAIL verdict rather than signal a crash — see each tool's
+note below.
+
+### `qleap_nt2_linear_retune(tile, letter, force=False, plan_only=False, dry_run=True, debug=False)`
+NT002C one-shot linear notch retune for one (tile, letter): extrapolates a
+knob move from prior calibration, then does one inductor-mode verification
+solve. `plan_only=True` plans the move via the script's own `--dry-run`
+(confirmed to stop before any COMSOL call or file write) — runs
+synchronously in the foreground.
+
+### `qleap_nt2_purcell_check(tile, letters="ABCD", csv_override=None, no_plot=False, record_suffix="LINEAR", debug=False)`
+Foreground kappa(f_q) -> Purcell T1 gate from existing linear/ratio probe
+CSVs (seconds). `record_suffix` selects `"LINEAR"` or `"RATIO"` records;
+`csv_override` (a single sweep CSV) requires exactly one letter.
+
+### `qleap_nt2_ratio_retune(tile, letter, force=False, plan_only=False, dry_run=True, debug=False)`
+NT002D ratio-trade (meander/straight arm-length) retune driver: resume-safe,
+budgeted route walk (map probe -> seed -> secant/bisect -> verification).
+`plan_only=True` behaves like `qleap_nt2_linear_retune`'s.
+
+### `qleap_nt2_ratio_gap_check(tile, letter_model, param_overrides, letters="ABCD", min_gap_um=10.0, window_um=800.0, tag="candidate", cores=4, no_render=False, debug=False)`
+10 µm clearance gate for a ratio-trade candidate. Foreground; needs a live
+COMSOL session to rebuild/trace the geometry, but no solve. **Always exits
+0** — the real verdict is in `result["report"]["verdict"]`, not the return
+code.
+
+### `qleap_nt2_ratio_geometry_gate(tile, letter_model, param_overrides, letters="ABCD", tag="candidate", cores=4, area_tol_um2=2.0, length_tol_um=0.5, no_render=False, debug=False)`
+Topology-aware conductor/corridor conservation gate. Foreground; needs a live
+COMSOL session, no solve. **Return code 2 is a legitimate FAIL verdict**, not
+a crash — see `result["verdict"]`.
+
+### `qleap_nt2_run_ratio_trade_probe(tile, letter, tag, center_ghz, param_overrides, others="inductor", half_mhz=250.0, step_mhz=10.0, cores=8, save_model=None, dry_run=True, debug=False)`
+Gated ratio-trade probe: runs `ratio_geometry_gate.py` on the exact candidate
+first — COMSOL is not solved and no model is saved unless that gate PASSes —
+then the notch probe. **Return code 3 means it completed but was not
+verified** (see `result["verified"]`), not a crash; any other non-zero code
+is a real failure (commonly the internal gate FAILing, which propagates as
+an uncaught `CalledProcessError`).
+
+### `qleap_nt2_build_merged_model(tile, with_notch_finals=False, output_path=None, cores=4, plan_only=False, dry_run=True, debug=False)`
+Build the merged per-tile S-parameter model from accepted per-letter knobs.
+`with_notch_finals` also applies each letter's accepted NT002 filter knobs.
+`plan_only=True` runs the script's own `--dry-run`, which computes and prints
+the real knob-provenance report **before** opening COMSOL — safe to run
+synchronously in the foreground.
+
+### `qleap_nt2_verify_merged_notches(tile, model_path=None, cores=8, reanalyze=False, skip_fr=False, dry_run=True, debug=False)`
+Final merged-context acceptance gate: re-probes each letter's notch (and,
+unless `skip_fr`, the dressed readout band) on the merged model; checks
+Purcell T1 + notch offset per letter. Near-instant when `reanalyze=True` or
+all sweep CSVs already exist.
+
+### `qleap_nt2_publish_optimized(tile, debug=False)`
+Publish an accepted merged tile model to `simulations/OptimizedModels/{tile}/`
+(mph + knob manifest + README + figures, sha256-stamped). Foreground: file
+I/O + hashing, no COMSOL. Writes **outside** NotchTuning002 by design (no
+user-controlled path argument, so no path-injection surface); refuses to
+overwrite an already-published tile.
+
+---
+
+## CCT001 cable-coupling tuning (`simulations/CableCouplingTuning001/`)
+
+Wrappers for the cable (drive-line) decay-rate tuning campaign: sweeps
+back-spoke width (and, when needed, spoke count) on QCS001 cable-activated
+single-qubit models to hit gamma/2pi = 500 Hz.
+
+### `qleap_cct001_tune_width(tile, letter, cores=8, max_trials=8, spoke_count=8, seed_width_um=None, width_bounds_um=None, dry_run=True, debug=False)`
+Log-log secant sweep of back-spoke width to hit gamma/2pi = 500 Hz ±5%.
+`width_bounds_um` (`[lo, hi]`, `lo < hi`) overrides the default width ceiling
+— used for the integer-ladder recovery pass on qubits unreachable at the
+default bounds. `spoke_count != 8` runs in its own trial/state namespace.
+Prerequisite: the pristine cable-activated model
+(`work/pristine/{tile}-{letter}_Cable.mph`) must already exist.
+
+### `qleap_cct001_rollout_letter(tile, letter, cores=8, force_n=None, width_bounds_um=None, max_trials=None, dry_run=True, debug=False)`
+End-to-end CCT001 rollout for one qubit: ensure pristine copy -> width
+campaign (with n±1 spoke-count fallback unless `force_n` pins it) -> fine
+verify -> broad-sweep straight-line gate. Prerequisite: the QCS001
+cable-activated source model must exist.
