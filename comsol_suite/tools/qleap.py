@@ -60,6 +60,10 @@ def _rcs_dir() -> Path:
     return _repo_root() / "simulations" / "ReadoutCouplingSimulation001"
 
 
+def _nt2_dir() -> Path:
+    return _repo_root() / "simulations" / "NotchTuning002"
+
+
 def _python_bin() -> str:
     return str(load_config().python_bin)
 
@@ -254,6 +258,67 @@ def qleap_extract_notch(unit: str, row: str,
         out["figure"] = str(nds / tile / "figures" /
                             f"{tile}_kappa_vs_freq.png")
     return out
+
+
+def qleap_run_nt2_probe(
+    registry: JobRegistry,
+    tag: str,
+    others: str = "open",
+    center_ghz: float = 4.15,
+    half_mhz: float = 200.0,
+    step_mhz: float = 5.0,
+    param_overrides: Optional[Dict[str, str]] = None,
+    save_model: Optional[str] = None,
+    cores: int = 8,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Run one bounded, budgeted NT002 U0_R0-A empirical tuning probe."""
+    if others not in ("open", "inductor"):
+        raise ValueError("others must be 'open' or 'inductor'")
+    if not tag or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in tag):
+        raise ValueError("tag may contain only letters, numbers, '_' and '-'")
+    nt2 = _nt2_dir()
+    script = nt2 / "tools" / "run_a_probe.py"
+    argv = [
+        _python_bin(), str(script),
+        "--tag", tag,
+        "--others", others,
+        "--center-ghz", str(center_ghz),
+        "--half-mhz", str(half_mhz),
+        "--step-mhz", str(step_mhz),
+        "--cores", str(cores),
+    ]
+    for name, expression in sorted((param_overrides or {}).items()):
+        argv += ["--set", f"{name}={expression}"]
+    if save_model:
+        destination = Path(save_model)
+        if not destination.is_absolute():
+            destination = nt2 / destination
+        try:
+            destination.resolve().relative_to(nt2.resolve())
+        except ValueError as exc:
+            raise ValueError("save_model must be inside NotchTuning002") from exc
+        argv += ["--save-model", str(destination)]
+
+    round_dir = nt2 / "U0_R0" / "Data" / "rounds" / tag
+    outputs = [
+        str(round_dir / f"{tag}_A_probe.csv"),
+        str(round_dir / f"{tag}_summary.json"),
+    ]
+    if save_model:
+        outputs.append(str(destination))
+    if dry_run:
+        return _preflight("qleap_run_nt2_probe", argv, outputs)
+    return _launch(
+        registry,
+        "qleap_run_nt2_probe",
+        argv,
+        cwd=nt2,
+        collect_dir=round_dir,
+        timeout_s=4 * 3600,
+        debug=debug,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

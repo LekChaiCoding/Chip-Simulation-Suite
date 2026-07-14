@@ -1003,6 +1003,42 @@ def qleap_extract_notch(unit: str, row: str,
 
 
 @mcp.tool()
+def qleap_run_nt2_probe(
+    tag: str,
+    others: str = "open",
+    center_ghz: float = 4.15,
+    half_mhz: float = 200.0,
+    step_mhz: float = 5.0,
+    param_overrides: Optional[Dict[str, str]] = None,
+    save_model: Optional[str] = None,
+    cores: int = 8,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Run one bounded, resume-safe NotchTuning002 U0_R0-A probe.
+
+    ``param_overrides`` maps approved COMSOL names to expressions such as
+    ``{"g_readout1_l_end": "590[um]"}``. The NT002 wrapper enforces the
+    approved parameter envelope, 16-probe budget, global COMSOL lock, source
+    hash recording, and skip-completed behavior. Set ``save_model`` only for
+    the fresh-load winning candidate; it must remain inside NotchTuning002.
+    """
+    return qleap.qleap_run_nt2_probe(
+        REGISTRY,
+        tag=tag,
+        others=others,
+        center_ghz=center_ghz,
+        half_mhz=half_mhz,
+        step_mhz=step_mhz,
+        param_overrides=param_overrides,
+        save_model=save_model,
+        cores=cores,
+        dry_run=dry_run,
+        debug=debug,
+    )
+
+
+@mcp.tool()
 def qleap_run_eigen_gqr(
     unit: str,
     row: str,
