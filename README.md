@@ -531,6 +531,17 @@ Chip-Simulation-Suite/
 
 ---
 
+## qleap campaign framework (2026-07-17)
+
+New qleap campaigns are scaffolded on the shared **qleapsim** framework
+(`<repo>/simulations/_framework/`, ops doctrine in its `PLAYBOOK.md`).
+Future `qleap_*` MCP wrappers should target the scaffolded campaign tools
+(`tools/run_tile.py`, `tools/publish_optimized.py`) — same thin-subprocess
+pattern as the existing NT002/CCT001 wrappers, and the framework's staged
+runners are dry-run-friendly (`--print-plan`).
+
+---
+
 ## Licence
 
 Proprietary — internal lab use.
