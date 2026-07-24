@@ -622,7 +622,11 @@ result you intend to use downstream.
 (P3) → `align_seam_couplers.py` (P3.6: taper every internal tile-tile
 seam's coupler rails to a shared line by recessing into each tile's own
 real conductor — see `RESULTS.md`'s 2026-07-24 entry for why an external
-extension zone alone no longer suffices) → `gds_validity_checker.py` →
+extension zone alone no longer suffices; also writes
+`Data/block_seams_manifest.json`) → `gds_validity_checker.py` →
+`verify_seam_continuity.py` (confirms every seam in that manifest is
+actually continuous in the final GDS — added 2026-07-24 after a
+removal-rect bug silently broke a seam with no other gate catching it) →
 `block_checker.py` (P5). No arguments — always a full, deterministic
 rebuild from whatever `<TILE>/work/<TILE>_layered.gds` currently holds for
 all 6 tiles. Fails loudly at the first failing step. Returns the P5 gate
@@ -643,9 +647,13 @@ block-to-block seams.
 **Canonical P4 entry point.** Chains, as one command: `tile_chip.py` (P4)
 → `align_chip_seams.py` (P4.5: taper every cross-block-instance seam's
 coupler rails to a shared line, same recess-into-own-conductor approach
-as P3.6) → `gds_validity_checker.py`. Requires `OptimizedModels/block_A.gds`
-to already be fully stitched (run `qleap_chipconstruction_build_block`
-first). Fails loudly at the first failing step.
+as P3.6; also writes `Data/chip_seams_manifest.json` covering both the
+cross-block seams it tapers and every block copy's own within-block
+seams) → `gds_validity_checker.py` → `verify_seam_continuity.py` (same
+gate as P3.6, checking every seam in the chip-level manifest). Requires
+`OptimizedModels/block_A.gds` to already be fully stitched (run
+`qleap_chipconstruction_build_block` first). Fails loudly at the first
+failing step.
 
 ### `qleap_chipconstruction_verify_block(debug=False)`
 P5: final block-level gate — exactly 24 JJ polygons (layer 30, one per
@@ -661,8 +669,10 @@ periodic grid tiles cleanly with no parity mismatch, unlike the 3-tile-wide
 square (16/64/144/256 → 2x2/4x4/6x6/8x8 unit tiles), matching
 `resources/qleap_qubit_layout/config/chip_types.json`'s own convention.
 Preview with `tools/render_schematic.py --view hexlattice --qubits N`
-first and get sign-off before calling this. Self-gates with
-`gds_validity_checker.py`; fails loudly if it doesn't pass. Writes
+first and get sign-off before calling this. Writes
+`Data/hexlattice_{qubits}qubit_seams_manifest.json`. Self-gates with
+`gds_validity_checker.py` AND `verify_seam_continuity.py`; fails loudly
+if either doesn't pass. Writes
 `OptimizedModels/hexlattice_{qubits}qubit.gds`.
 
 ### `qleap_chipconstruction_status()`
