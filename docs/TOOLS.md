@@ -557,3 +557,116 @@ End-to-end CCT001 rollout for one qubit: ensure pristine copy -> width
 campaign (with n±1 spoke-count fallback unless `force_n` pins it) -> fine
 verify -> broad-sweep straight-line gate. Prerequisite: the QCS001
 cable-activated source model must exist.
+
+## ChipConstruction (`simulations/ChipConstruction/`)
+
+Wrappers for the mph → GDS → real-Josephson-Junction → block/chip/hexlattice
+assembly factory converting Stitching005's six finished unit-cell `.mph`
+models into one 2×3-tile block (24 qubits), then tiling multiple blocks
+onto the full chip with a confirmed vertical stagger (P4) or the same 6
+tiles directly into an unstaggered 16/64/144/256-qubit hexlattice (P7).
+Each unit cell is exactly 4000×4000 µm (`Data/tile_registry.json`). Full
+floor plan (every process's inputs/outputs/gate) in
+`simulations/ChipConstruction/tools/FACTORY_LAYOUT.md`; exact per-script
+CLI in `tools/PROCESSES.md`. Two tools follow the CCT001/NT2 `dry_run` +
+background-job pattern (they touch COMSOL); the rest follow
+`assemble_geometry`/`verify_cad`'s "no COMSOL required, runs
+synchronously" pattern.
+
+### `qleap_chipconstruction_build_schematics(debug=False)`
+P0a/P0b: (re)build the block-internal tile-arrangement schematic and the
+chip-level multi-block stagger schematic. No arguments; always regenerates
+`Data/block_layout_schematic.json/.gds` and `Data/chip_block_schematic.json/.gds`.
+Gate: Alex sign-off on the rendered PNGs, done outside this tool.
+
+### `qleap_chipconstruction_mph_preflight(tile, cores=8, dry_run=True, debug=False)`
+P1/P2 step 1: confirm a Stitching005 tile `.mph` is loadable and has the
+expected per-letter JJ port/lumped-element structure, before spending
+COMSOL-slot time on export.
+
+### `qleap_chipconstruction_export_tile(tile, dry_run=True, debug=False)`
+P1/P2 step 2: mph2gds export of one tile's raw geometry. Prerequisite:
+`comsol -multi on mphserver` already running + `CLASSPATH` set (outside
+this tool's control).
+
+### `qleap_chipconstruction_insert_jj(tile=None, all_tiles=False, debug=False)`
+P1/P2 steps 4-6 (`run_tile_pipeline.py`): JJ insertion + hooks, qubit-center
+measurement, Al probe pads, flux traps, then the validity gate — one tile
+or all 6. Exactly one of `tile`/`all_tiles=True` is required. No COMSOL.
+Run `generate_jj_configs.py` (no arguments, not wrapped separately) first
+whenever the shared JJ/Al-pad/flux-trap config changes.
+
+### `qleap_chipconstruction_gds_validity_check(gds_path, layer_config=None, degenerate_tolerance_um2=None, debug=False)`
+Structural GDS validity: degenerate/self-intersecting polygons, layer
+conformance against `layer_config.json`, broken cell hierarchy. Repo-generic
+— takes any GDS path, nothing campaign-specific.
+
+### `qleap_chipconstruction_gds_diff(gds_a, gds_b, layer=None, allow_region=None, tolerance_um2=None, debug=False)`
+XOR-based geometric diff between two GDS files. `allow_region` is
+`[cx, cy, w, h]` in µm — a region where a diff is expected (e.g. a JJ
+slit). Repo-generic. Not the gate for a fully-layered tile (its
+allow-region scope predates Al-pad/flux-trap insertion — see
+ChipConstruction's `GOTCHAS.md`); use for raw-vs-JJ-only or block/chip
+seam-overlap comparisons instead.
+
+### `qleap_chipconstruction_assemble_block(debug=False)`
+P3 ONLY: merge the 6 layered per-tile GDS files into `OptimizedModels/block_A.gds`,
+using the measured pitch from `Data/tile_registry.json`. No arguments;
+always rebuilds from whatever each tile's `_layered.gds` currently holds.
+This is the PRE-ALIGNMENT intermediate state (internal seams not yet
+tapered — see P3.6); prefer `qleap_chipconstruction_build_block` for any
+result you intend to use downstream.
+
+### `qleap_chipconstruction_build_block(debug=False)`
+**Canonical P3 entry point.** Chains, as one command: `assemble_block.py`
+(P3) → `align_seam_couplers.py` (P3.6: taper every internal tile-tile
+seam's coupler rails to a shared line by recessing into each tile's own
+real conductor — see `RESULTS.md`'s 2026-07-24 entry for why an external
+extension zone alone no longer suffices) → `gds_validity_checker.py` →
+`block_checker.py` (P5). No arguments — always a full, deterministic
+rebuild from whatever `<TILE>/work/<TILE>_layered.gds` currently holds for
+all 6 tiles. Fails loudly at the first failing step. Returns the P5 gate
+report as `parsed`.
+
+### `qleap_chipconstruction_tile_chip(block_cols=None, block_rows=None, debug=False)`
+P4 ONLY: multi-block chip tiling with the confirmed vertical stagger (even
+block-columns at baseline y, odd block-columns shifted down by half a
+block's height — a real physical offset, distinct from the within-block
+`block_phase` content-flip). Sequenced after P5 passes for the constituent
+block, despite the P4 numbering. Writes `OptimizedModels/chip.gds`. This
+is the PRE-ALIGNMENT intermediate state (each block's own outer perimeter
+tiles not yet tapered to their neighbors — see P4.5); prefer
+`qleap_chipconstruction_build_chip` for continuous couplers across
+block-to-block seams.
+
+### `qleap_chipconstruction_build_chip(block_cols=None, block_rows=None, debug=False)`
+**Canonical P4 entry point.** Chains, as one command: `tile_chip.py` (P4)
+→ `align_chip_seams.py` (P4.5: taper every cross-block-instance seam's
+coupler rails to a shared line, same recess-into-own-conductor approach
+as P3.6) → `gds_validity_checker.py`. Requires `OptimizedModels/block_A.gds`
+to already be fully stitched (run `qleap_chipconstruction_build_block`
+first). Fails loudly at the first failing step.
+
+### `qleap_chipconstruction_verify_block(debug=False)`
+P5: final block-level gate — exactly 24 JJ polygons (layer 30, one per
+qubit × 4 letters), manifest completeness, layer conformance. Writes
+`OptimizedModels/jj_manifest.json`; returns the parsed `{pass, problems,
+open_items}` report.
+
+### `qleap_chipconstruction_build_hexlattice(qubits, debug=False)`
+P7: assemble + fully seam-align a direct `nx_unit x ny_unit` grid of the 6
+unit-cell tiles (no "block" grouping, no vertical stagger — a plain
+periodic grid tiles cleanly with no parity mismatch, unlike the 3-tile-wide
+"block"). `qubits` must be a multiple of 4 whose `qubits/4` is a perfect
+square (16/64/144/256 → 2x2/4x4/6x6/8x8 unit tiles), matching
+`resources/qleap_qubit_layout/config/chip_types.json`'s own convention.
+Preview with `tools/render_schematic.py --view hexlattice --qubits N`
+first and get sign-off before calling this. Self-gates with
+`gds_validity_checker.py`; fails loudly if it doesn't pass. Writes
+`OptimizedModels/hexlattice_{qubits}qubit.gds`.
+
+### `qleap_chipconstruction_status()`
+Per-tile and per-process gate status across the whole campaign
+(schematics, per-tile raw/layered/render state, block/chip/hexlattice
+assembly, manifest entry count), independent of which process is
+currently being worked on.
