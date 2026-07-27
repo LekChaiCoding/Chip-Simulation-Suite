@@ -57,6 +57,23 @@ def test_tools_register_on_server():
         "qleap_nt2_publish_optimized",
         # qleap CCT001 cable-coupling tuning
         "qleap_cct001_tune_width", "qleap_cct001_rollout_letter",
+        # qleap F1 capacitance campaign (factory)
+        "qleap_cs002_optimize", "qleap_cs002_direct_probe",
+        "qleap_cs002_coupling_correct", "qleap_cs002_finalize",
+        # qleap ChipConstruction (Stitching005 mph -> GDS -> block/chip)
+        "qleap_chipconstruction_build_schematics",
+        "qleap_chipconstruction_mph_preflight",
+        "qleap_chipconstruction_export_tile",
+        "qleap_chipconstruction_insert_jj",
+        "qleap_chipconstruction_gds_validity_check",
+        "qleap_chipconstruction_gds_diff",
+        "qleap_chipconstruction_assemble_block",
+        "qleap_chipconstruction_build_block",
+        "qleap_chipconstruction_tile_chip",
+        "qleap_chipconstruction_build_chip",
+        "qleap_chipconstruction_verify_block",
+        "qleap_chipconstruction_build_hexlattice",
+        "qleap_chipconstruction_status",
     }
     missing = expected - names
     assert not missing, f"tools not registered: {missing}"

@@ -3,6 +3,22 @@
 All tools return JSON-serialisable dicts. Long-running tools return a `job_id`
 immediately; poll with `get_job_status` / `get_job_result`.
 
+## Path containment
+
+Every tool that accepts a free-form filesystem path (a GDS to check, an
+`.mph` to solve, a YAML to edit, a script to run, an output location, ...)
+rejects it up front — with a `ValueError` naming the tool, argument, path,
+and allowed root — if it resolves outside `CHIP_SIM_ROOT`
+(`comsol_suite/containment.py`; symlinks and `..` traversals are resolved
+before the check). This is a **poka-yoke against mistakes, not a security
+boundary**: the server runs unsandboxed as the same user, and its job is
+only to catch stray paths from other machines, typo'd `..` traversals, and
+outputs aimed at `$HOME` before anything touches disk. For unattended or
+remote operation the actual boundary is the Bubblewrap SSH gateway
+(`QubitDesignPipeline/security/restricted_agent_ssh.sh`). If a rejected
+path is genuinely correct, point `CHIP_SIM_ROOT` (env or
+`config/paths.toml`) at a directory that contains it.
+
 ---
 
 ## CAD stage
@@ -557,6 +573,65 @@ End-to-end CCT001 rollout for one qubit: ensure pristine copy -> width
 campaign (with n±1 spoke-count fallback unless `force_n` pins it) -> fine
 verify -> broad-sweep straight-line gate. Prerequisite: the QCS001
 cable-activated source model must exist.
+
+## F1 capacitance campaign (factory) (`simulations/F1_QubitLoop001/` + `simulations/CapacitanceSimulation002/`)
+
+Wrappers for the F1 capacitance<->coupling factory loop and its CS002
+probe/promotion tools. F1's driver (`run_cj_loop.py`) runs the closed PDCA
+loop per tile — intake (refuses without a sealed, signed F0 acceptance
+record; C/J targets come from the factory record, never files) ->
+[PLAN -> DO -> CHECK -> ACT] x rounds -> accept | quarantine + andon —
+with `coupling_correct.py` as the recorded-artifact ACT step. All four
+wrappers build the repo-standard
+`env -u VIRTUAL_ENV uv run --no-project [--with mph --with numpy] python ...`
+launch command (`simulations/_framework/PLAYBOOK.md`) and never import the
+campaign libs into the server process.
+
+### `qleap_cs002_optimize(tile=None, rounds=3, solve=False, j_sim_path=None, print_plan=False, replay=False, dry_run=True, debug=False)`
+The F1 PDCA loop for one tile (`run_cj_loop.py`). Per-tile by design — the
+driver has no per-letter CLI; its DO stage runs `f1_optimize.py` for all
+four letters internally within the fail-closed per-qubit solve budget.
+Modes: `print_plan=True` shows the full stage plan (offline);
+`replay=True` runs the DO-3 -> CHECK -> ACT math against the real
+CS002-era extractions (offline, no writes; `tile` optional); `j_sim_path`
+runs CHECK/ACT against an existing J-extraction JSON without solving;
+`solve=True` runs the real COMSOL DO stages (solve host only, mutually
+exclusive with the offline modes). `dry_run=False` launches a background
+job (`get_job_status` / `get_job_result` to follow).
+
+### `qleap_cs002_direct_probe(tile, letter, run_id, params, dry_run=True, debug=False)`
+Run a fixed list of parameter sets through the CS002 qubit simulator
+(`direct_probe.py`) — targeted probes where the NM optimizer failed to
+explore a region, or boundary-extension probes. `params` is one dict or a
+list of CS002 geometry-parameter dicts (e.g. `{"qubit_pad_r": 108.0,
+"qubit_readout_pad_angle": 59.2}`); `run_id` namespaces the resume-safe
+history JSON (`<tile>/<letter>/Data/<run_id>_history.json`).
+COMSOL-touching: one capacitance solve per set; `dry_run=False` launches a
+background job.
+
+### `qleap_cs002_coupling_correct(tile=None, j_sim_path=None, brickwall=False, out_path=None, dry_run=True, debug=False)`
+First-order C<->J correction as a **recorded artifact**
+(`coupling_correct.py`): `C_new = sign(C_old)*|C_old|*sqrt(J_target/J_sim)`,
+applied to C_qc entries only; edges whose ratio falls outside the
+linearity band are refused (`correction_refused`), not extrapolated.
+Emits a corrected-targets JSON with full provenance (formula, input
+hashes, per-edge ratios/factors/statuses) — never mutates models.
+`j_sim_path` is required (the script's mandatory `--j-sim`);
+`brickwall=True` parses it as raw brickwall-estimator output; `tile`
+restricts to one tile's edges; `out_path` overrides the artifact location.
+Offline (pure math, seconds): `dry_run=False` runs synchronously.
+
+### `qleap_cs002_finalize(tile, letter, record_path, label, allow_out_of_tolerance=False, dry_run=True, debug=False)`
+Promote an accepted qubit candidate into
+`simulations/CapacitanceSimulation002/Optimized Models/<TILE>/<TILE>_<L>/`
+(`finalize_optimized_model.py`): reload the letter-specific base model,
+apply the candidate parameters from `record_path` (the candidate JSON
+record), save a handoff `.mph`, and copy the paired record, Touchstone,
+and figure alongside; `label` names the handoff artifacts.
+`allow_out_of_tolerance` skips the ±0.2 fF capacitance-tolerance refusal
+(use only with an explicit acceptance rationale). A promotion AND
+COMSOL-touching — the HITL approval gate fires on `dry_run=False` as with
+every real action.
 
 ## ChipConstruction (`simulations/ChipConstruction/`)
 

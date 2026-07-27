@@ -44,9 +44,11 @@ from typing import Any, Dict, List, Optional
 from mcp.server.fastmcp import FastMCP
 
 from .config import load_config
+from .containment import ensure_contained
 from .jobs import JobRegistry
 from .tools import (cad, comsol, fitting, circuit_physics, design_params,
-                    qleap, qleap_nt2, qleap_cct001)
+                    qleap, qleap_nt2, qleap_cct001, qleap_cs002,
+                    qleap_chipconstruction)
 
 # ── Shared singletons ────────────────────────────────────────────────────────
 CONFIG = load_config()
@@ -83,6 +85,8 @@ def generate_cad(
 
     Pair with ``verify_cad`` to confirm geometry against a custom checker.
     """
+    if cad_script is not None:
+        ensure_contained(cad_script, arg="cad_script", tool="generate_cad")
     return cad.generate_cad(
         cad_script=cad_script,
         out_gds_var=out_gds_var,
@@ -118,6 +122,10 @@ def verify_cad(
     Copy ``scripts/checker_template.py`` to write a checker for any device.
     ``passed=true`` means ``main()`` returned 0.
     """
+    if gds_path is not None:
+        ensure_contained(gds_path, arg="gds_path", tool="verify_cad")
+    if checker_script is not None:
+        ensure_contained(checker_script, arg="checker_script", tool="verify_cad")
     return cad.verify_cad(gds_path=gds_path, checker_script=checker_script,
                           gds_var=gds_var, debug=debug)
 
@@ -144,6 +152,9 @@ def run_custom_cad(
     - **out_png_var**: variable name for the PNG preview (``null`` to skip).
     - **gds_filename**: filename of the output GDS (inside ``output_dir``).
     """
+    ensure_contained(cad_script, arg="cad_script", tool="run_custom_cad")
+    if output_dir is not None:
+        ensure_contained(output_dir, arg="output_dir", tool="run_custom_cad")
     return cad.run_custom_cad(
         cad_script=cad_script,
         output_dir=output_dir,
@@ -182,6 +193,7 @@ def assemble_geometry(
 
     Returns ``{ok, output_path, n_components, bbox, error}``.
     """
+    ensure_contained(output_path, arg="output_path", tool="assemble_geometry")
     return cad.assemble_geometry(
         components=components,
         output_path=output_path,
@@ -247,6 +259,7 @@ def build_comsol_model(
         ``build_comsol_model`` is JTWPA-specific. For a different device
         (transmon, resonator, etc.) use ``run_custom_comsol_build`` instead.
     """
+    ensure_contained(gds_path, arg="gds_path", tool="build_comsol_model")
     return comsol.build_comsol_model(
         REGISTRY, gds_path, junction_inductance_ph, comsol_host,
         output_dir, geom_params, material_params, comsol_cores,
@@ -297,6 +310,9 @@ def run_custom_comsol_build(
     Returns ``{dry_run, patches_applied, mph_files_would_save, comsol_health}``
     in dry-run mode, or ``{job_id, status}`` to poll when ``dry_run=False``.
     """
+    ensure_contained(build_script, arg="build_script", tool="run_custom_comsol_build")
+    if output_dir is not None:
+        ensure_contained(output_dir, arg="output_dir", tool="run_custom_comsol_build")
     return comsol.run_custom_comsol_build(
         REGISTRY, build_script=build_script, output_dir=output_dir,
         out_dir_var=out_dir_var, geom_params=geom_params,
@@ -338,6 +354,8 @@ def validate_geometry(
     dry-run mode, or ``{job_id, status}`` to poll — ``get_job_result`` yields
     ``{ok, passed, returncode, report, log_tail}``.
     """
+    ensure_contained(mph_path, arg="mph_path", tool="validate_geometry")
+    ensure_contained(checker_script, arg="checker_script", tool="validate_geometry")
     return comsol.validate_geometry(
         REGISTRY, mph_path=mph_path, checker_script=checker_script,
         mph_path_var=mph_path_var, reference_vertices_csv=reference_vertices_csv,
@@ -383,6 +401,7 @@ def run_stub_length_sweep(
         study_type='frequency_domain', ...)`` for equivalent behavior
         with any COMSOL geometry parameter.
     """
+    ensure_contained(mph_path, arg="mph_path", tool="run_stub_length_sweep")
     return comsol.run_stub_length_sweep(
         REGISTRY, mph_path, stub_lengths_um, freq_ghz, comsol_host,
         output_dir, comsol_cores, port, resume, dry_run, debug)
@@ -432,6 +451,7 @@ def run_eigenfrequency_study(
     Returns ``{job_id, status}`` on real-run. Poll ``get_job_result`` for
     ``{mph_paths, eigenfrequencies_csv}`` when the job finishes.
     """
+    ensure_contained(mph_path, arg="mph_path", tool="run_eigenfrequency_study")
     return comsol.run_eigenfrequency_study(
         REGISTRY, mph_path, n_modes, freq_start_ghz, freq_stop_ghz,
         extract_fields, path_selections, node_groups,
@@ -442,6 +462,9 @@ def run_eigenfrequency_study(
 def export_touchstone(csv_path: str, output_path: Optional[str] = None,
                       dry_run: bool = True, debug: bool = False) -> Dict[str, Any]:
     """Convert an extracted S-parameter CSV to a Touchstone ``.s2p`` file."""
+    ensure_contained(csv_path, arg="csv_path", tool="export_touchstone")
+    if output_path is not None:
+        ensure_contained(output_path, arg="output_path", tool="export_touchstone")
     return comsol.export_touchstone(REGISTRY, csv_path, output_path, dry_run, debug)
 
 
@@ -490,6 +513,7 @@ def run_geometry_param_sweep(
     - **resume**: skip values already present in the output CSV.
     - **dry_run**: True (default) = validate; False = launch background job.
     """
+    ensure_contained(mph_path, arg="mph_path", tool="run_geometry_param_sweep")
     return comsol.run_geometry_param_sweep(
         REGISTRY, mph_path=mph_path, param_name=param_name,
         param_values=param_values, param_unit=param_unit,
@@ -543,6 +567,7 @@ def run_decay_rate_sweep(
     - **resume**: skip values already in the output CSV.
     - **dry_run**: True (default) = validate; False = launch background job.
     """
+    ensure_contained(mph_path, arg="mph_path", tool="run_decay_rate_sweep")
     return comsol.run_decay_rate_sweep(
         REGISTRY, mph_path=mph_path, sweep_param=sweep_param,
         sweep_values=sweep_values, sweep_unit=sweep_unit,
@@ -585,6 +610,7 @@ def run_coupling_extraction(
     Returns ``{g_Hz, g_MHz, chi_Hz, chi_MHz, anharmonicity_Hz, f_mode1_Hz,
     f_mode2_Hz, mode_labels, participation_ratio, error}``.
     """
+    ensure_contained(eigenfreq_csv, arg="eigenfreq_csv", tool="run_coupling_extraction")
     return comsol.run_coupling_extraction(
         eigenfreq_csv=eigenfreq_csv,
         mode1_path_col=mode1_path_col,
@@ -666,6 +692,7 @@ def run_parameter_inversion(
     ``sweep_data``          : raw (param_value, observable) pairs
     ``note``                : human-readable recommendation string
     """
+    ensure_contained(mph_path, arg="mph_path", tool="run_parameter_inversion")
     return comsol.run_parameter_inversion(
         REGISTRY,
         mph_path=mph_path,
@@ -738,6 +765,7 @@ def design_params_read(yaml_path: str, key_path: str) -> Dict[str, Any]:
     Returns ``{ok, value, key_path, yaml_path, error}``.
     Creates the file with an empty dict if it does not exist.
     """
+    ensure_contained(yaml_path, arg="yaml_path", tool="design_params_read")
     try:
         value = design_params.read_param(yaml_path, key_path)
         return {"ok": True, "value": value, "key_path": key_path,
@@ -761,6 +789,7 @@ def design_params_write(yaml_path: str, key_path: str, value: Any) -> Dict[str, 
 
     Returns ``{ok, key_path, value, yaml_path, error}``.
     """
+    ensure_contained(yaml_path, arg="yaml_path", tool="design_params_write")
     try:
         design_params.write_param(yaml_path, key_path, value)
         return {"ok": True, "key_path": key_path, "value": value,
@@ -811,6 +840,7 @@ def get_pipeline_session_plan(
     Returns ``{completed_stages, next_stage, missing_params, all_values,
     session_scope, error}``.
     """
+    ensure_contained(yaml_path, arg="yaml_path", tool="get_pipeline_session_plan")
     try:
         return design_params.get_session_plan(yaml_path, stage_map)
     except Exception as exc:
@@ -837,6 +867,10 @@ def run_abcd_fit(
       for quickly re-fitting one stub or for manual parallelisation.
       Use ``run_abcd_fit_parallel`` to auto-parallelize all stubs at once.
     """
+    if data_path is not None:
+        ensure_contained(data_path, arg="data_path", tool="run_abcd_fit")
+    if output_dir is not None:
+        ensure_contained(output_dir, arg="output_dir", tool="run_abcd_fit")
     return fitting.run_abcd_fit(REGISTRY, data_path=data_path,
                                 output_dir=output_dir,
                                 stub_filter_um=stub_filter_um, debug=debug)
@@ -859,6 +893,10 @@ def run_abcd_fit_parallel(
     Returns ``{job_id, status, n_stubs}`` immediately. Poll ``get_job_result``
     for ``{stubs_ok, merged_csv, output_files, figures}``.
     """
+    if data_path is not None:
+        ensure_contained(data_path, arg="data_path", tool="run_abcd_fit_parallel")
+    if output_dir is not None:
+        ensure_contained(output_dir, arg="output_dir", tool="run_abcd_fit_parallel")
     return fitting.run_abcd_fit_parallel(
         REGISTRY, data_path=data_path, output_dir=output_dir,
         max_workers=max_workers, debug=debug)
@@ -891,6 +929,8 @@ def run_generic_fit(
     Returns ``{job_id, status}`` — poll ``get_job_result`` for ``output_files``
     and ``figures``.
     """
+    ensure_contained(fit_script, arg="fit_script", tool="run_generic_fit")
+    ensure_contained(data_path, arg="data_path", tool="run_generic_fit")
     return fitting.run_generic_fit(
         REGISTRY, fit_script=fit_script, data_path=data_path,
         output_dir=output_dir, dat_path_var=dat_path_var,
@@ -1135,6 +1175,8 @@ def qleap_nt2_purcell_check(tile: str, letters: str = "ABCD",
     """Foreground kappa(f_q) -> Purcell T1 gate from existing linear/ratio
     probe CSVs. ``record_suffix`` selects ``"LINEAR"`` or ``"RATIO"``
     records."""
+    if csv_override is not None:
+        ensure_contained(csv_override, arg="csv_override", tool="qleap_nt2_purcell_check")
     return qleap_nt2.qleap_nt2_purcell_check(
         tile=tile, letters=letters, csv_override=csv_override,
         no_plot=no_plot, record_suffix=record_suffix, debug=debug)
@@ -1214,6 +1256,8 @@ def qleap_nt2_build_merged_model(tile: str, with_notch_finals: bool = False,
     also applies each letter's accepted filter knobs. ``plan_only=True`` runs
     the script's own ``--dry-run`` (real knob-provenance report, no COMSOL)
     synchronously."""
+    if output_path is not None:
+        ensure_contained(output_path, arg="output_path", tool="qleap_nt2_build_merged_model")
     return qleap_nt2.qleap_nt2_build_merged_model(
         REGISTRY, tile=tile, with_notch_finals=with_notch_finals,
         output_path=output_path, cores=cores, plan_only=plan_only,
@@ -1227,6 +1271,8 @@ def qleap_nt2_verify_merged_notches(tile: str, model_path: Optional[str] = None,
                                     debug: bool = False) -> Dict[str, Any]:
     """Final merged-context acceptance gate: Purcell T1 + notch offset (and
     dressed f_r unless ``skip_fr``) per letter, on the merged tile model."""
+    if model_path is not None:
+        ensure_contained(model_path, arg="model_path", tool="qleap_nt2_verify_merged_notches")
     return qleap_nt2.qleap_nt2_verify_merged_notches(
         REGISTRY, tile=tile, model_path=model_path, cores=cores,
         reanalyze=reanalyze, skip_fr=skip_fr, dry_run=dry_run, debug=debug)
@@ -1273,6 +1319,238 @@ def qleap_cct001_rollout_letter(tile: str, letter: str, cores: int = 8,
         REGISTRY, tile=tile, letter=letter, cores=cores, force_n=force_n,
         width_bounds_um=width_bounds_um, max_trials=max_trials,
         dry_run=dry_run, debug=debug)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F1 capacitance campaign (factory) — simulations/F1_QubitLoop001/ +
+# simulations/CapacitanceSimulation002/
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def qleap_cs002_optimize(tile: Optional[str] = None,
+                         rounds: int = qleap_cs002.DEFAULT_ROUNDS,
+                         solve: bool = False,
+                         j_sim_path: Optional[str] = None,
+                         print_plan: bool = False, replay: bool = False,
+                         dry_run: bool = True,
+                         debug: bool = False) -> Dict[str, Any]:
+    """F1 PDCA capacitance<->coupling loop for one tile (``run_cj_loop.py``,
+    per-tile by design — DO runs all four letters internally). Modes:
+    ``print_plan`` (offline stage plan), ``replay`` (offline DO-3->CHECK->ACT
+    math on real CS002-era extractions, ``tile`` optional), ``j_sim_path``
+    (CHECK without solve against an existing extraction JSON), ``solve``
+    (the real COMSOL DO stages — solve host only). Intake refuses without a
+    sealed F0 record. ``dry_run=True`` (default) validates and returns the
+    exact command; ``dry_run=False`` launches a background job."""
+    return qleap_cs002.qleap_cs002_optimize(
+        REGISTRY, tile=tile, rounds=rounds, solve=solve,
+        j_sim_path=j_sim_path, print_plan=print_plan, replay=replay,
+        dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_cs002_direct_probe(tile: str, letter: str, run_id: str,
+                             params: List[Dict[str, float]],
+                             dry_run: bool = True,
+                             debug: bool = False) -> Dict[str, Any]:
+    """Run a fixed list of CS002 parameter sets through the qubit simulator
+    (``direct_probe.py`` — targeted/boundary-extension probes the NM
+    optimizer missed). ``run_id`` namespaces the resume-safe history JSON;
+    ``params`` is a list of geometry-parameter dicts (e.g.
+    ``{"qubit_pad_r": 108.0}``). COMSOL-touching (one capacitance solve per
+    set). ``dry_run=True`` (default) returns the exact command;
+    ``dry_run=False`` launches a background job."""
+    return qleap_cs002.qleap_cs002_direct_probe(
+        REGISTRY, tile=tile, letter=letter, run_id=run_id, params=params,
+        dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_cs002_coupling_correct(tile: Optional[str] = None,
+                                 j_sim_path: Optional[str] = None,
+                                 brickwall: bool = False,
+                                 out_path: Optional[str] = None,
+                                 dry_run: bool = True,
+                                 debug: bool = False) -> Dict[str, Any]:
+    """First-order C<->J correction as a recorded artifact
+    (``coupling_correct.py``): scales C_qc targets by
+    ``sqrt(J_target/J_sim)``, refuses edges outside the linearity band, and
+    emits a corrected-targets JSON with full provenance — never mutates
+    models. ``j_sim_path`` (required) is the J-extraction JSON;
+    ``brickwall=True`` parses it as raw brickwall-estimator output. Offline
+    (pure math, seconds): ``dry_run=False`` runs synchronously."""
+    return qleap_cs002.qleap_cs002_coupling_correct(
+        REGISTRY, tile=tile, j_sim_path=j_sim_path, brickwall=brickwall,
+        out_path=out_path, dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_cs002_finalize(tile: str, letter: str, record_path: str,
+                         label: str, allow_out_of_tolerance: bool = False,
+                         dry_run: bool = True,
+                         debug: bool = False) -> Dict[str, Any]:
+    """Promote an accepted qubit candidate into CS002's
+    ``Optimized Models/<TILE>/<TILE>_<L>/`` (``finalize_optimized_model.py``):
+    reload the letter's base model, apply the candidate parameters from
+    ``record_path``, save the handoff ``.mph``, and copy record/Touchstone/
+    figure alongside. ``allow_out_of_tolerance`` skips the +/-0.2 fF refusal.
+    A promotion AND COMSOL-touching — the HITL approval gate fires on
+    ``dry_run=False`` as with every real action; ``dry_run=True`` (default)
+    returns the exact command."""
+    return qleap_cs002.qleap_cs002_finalize(
+        REGISTRY, tile=tile, letter=letter, record_path=record_path,
+        label=label, allow_out_of_tolerance=allow_out_of_tolerance,
+        dry_run=dry_run, debug=debug)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ChipConstruction: Stitching005 mph -> GDS -> real-JJ -> block/chip assembly
+# (simulations/ChipConstruction/)
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def qleap_chipconstruction_build_schematics(debug: bool = False) -> Dict[str, Any]:
+    """P0a/P0b: (re)build the block-internal tile-arrangement schematic and
+    the chip-level multi-block stagger schematic (foreground, no COMSOL).
+    Gate: Alex sign-off on the rendered PNGs."""
+    return qleap_chipconstruction.qleap_chipconstruction_build_schematics(debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_mph_preflight(tile: str, cores: int = 8,
+                                        dry_run: bool = True,
+                                        debug: bool = False) -> Dict[str, Any]:
+    """P1/P2 step 1: confirm a Stitching005 tile .mph is loadable with the
+    expected per-letter JJ port/lumped-element structure, before spending
+    COMSOL-slot time on export."""
+    return qleap_chipconstruction.qleap_chipconstruction_mph_preflight(
+        REGISTRY, tile=tile, cores=cores, dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_export_tile(tile: str, dry_run: bool = True,
+                                       debug: bool = False) -> Dict[str, Any]:
+    """P1/P2 step 2: mph2gds export of one tile's raw geometry. Requires
+    `comsol -multi on mphserver` already running + CLASSPATH set (outside
+    this tool's control)."""
+    return qleap_chipconstruction.qleap_chipconstruction_export_tile(
+        REGISTRY, tile=tile, dry_run=dry_run, debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_insert_jj(tile: Optional[str] = None,
+                                     all_tiles: bool = False,
+                                     debug: bool = False) -> Dict[str, Any]:
+    """P1/P2 steps 4-6: JJ insertion + hooks, qubit-center measurement, Al
+    probe pads, flux traps, then the validity gate -- one tile or all 6
+    (foreground, no COMSOL). Run `generate_jj_configs.py` first whenever the
+    shared JJ/Al-pad/flux-trap config changes."""
+    return qleap_chipconstruction.qleap_chipconstruction_insert_jj(
+        tile=tile, all_tiles=all_tiles, debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_gds_validity_check(
+        gds_path: str, layer_config: Optional[str] = None,
+        degenerate_tolerance_um2: Optional[float] = None,
+        debug: bool = False) -> Dict[str, Any]:
+    """Structural GDS validity: degenerate/self-intersecting polygons, layer
+    conformance, broken hierarchy. Repo-generic (any GDS path)."""
+    ensure_contained(gds_path, arg="gds_path", tool="qleap_chipconstruction_gds_validity_check")
+    if layer_config is not None:
+        ensure_contained(layer_config, arg="layer_config", tool="qleap_chipconstruction_gds_validity_check")
+    return qleap_chipconstruction.qleap_chipconstruction_gds_validity_check(
+        gds_path=gds_path, layer_config=layer_config,
+        degenerate_tolerance_um2=degenerate_tolerance_um2, debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_gds_diff(
+        gds_a: str, gds_b: str, layer: Optional[int] = None,
+        allow_region: Optional[List[float]] = None,
+        tolerance_um2: Optional[float] = None,
+        debug: bool = False) -> Dict[str, Any]:
+    """XOR-based geometric diff between two GDS files. `allow_region` is
+    [cx, cy, w, h] in um -- a region where a diff is expected (e.g. a JJ
+    slit). Repo-generic; not the gate for a fully-layered tile (see
+    ChipConstruction's GOTCHAS.md) -- use for raw-vs-JJ-only or block/chip
+    seam-overlap comparisons."""
+    ensure_contained(gds_a, arg="gds_a", tool="qleap_chipconstruction_gds_diff")
+    ensure_contained(gds_b, arg="gds_b", tool="qleap_chipconstruction_gds_diff")
+    return qleap_chipconstruction.qleap_chipconstruction_gds_diff(
+        gds_a=gds_a, gds_b=gds_b, layer=layer, allow_region=allow_region,
+        tolerance_um2=tolerance_um2, debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_assemble_block(debug: bool = False) -> Dict[str, Any]:
+    """P3 ONLY: merge the 6 layered per-tile GDS files into
+    OptimizedModels/block_A.gds, using the measured pitch from
+    Data/tile_registry.json (foreground, no COMSOL). Pre-alignment
+    intermediate state -- prefer qleap_chipconstruction_build_block for a
+    result with continuous couplers across internal seams."""
+    return qleap_chipconstruction.qleap_chipconstruction_assemble_block(debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_build_block(debug: bool = False) -> Dict[str, Any]:
+    """Canonical P3 entry point: assemble_block.py (P3) -> align_seam_couplers.py
+    (P3.6, tapers every internal tile-tile seam's coupler rails to a shared
+    line) -> gds_validity_checker.py -> block_checker.py (P5), as one
+    command. Fails loudly at the first failing step."""
+    return qleap_chipconstruction.qleap_chipconstruction_build_block(debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_tile_chip(block_cols: Optional[int] = None,
+                                     block_rows: Optional[int] = None,
+                                     debug: bool = False) -> Dict[str, Any]:
+    """P4 ONLY: multi-block chip tiling with the confirmed vertical stagger (even
+    block-columns at baseline y, odd block-columns shifted down by half a
+    block's height). Sequenced after P5 passes for the constituent block.
+    Pre-alignment intermediate state -- prefer qleap_chipconstruction_build_chip
+    for a result with continuous couplers across block-to-block seams."""
+    return qleap_chipconstruction.qleap_chipconstruction_tile_chip(
+        block_cols=block_cols, block_rows=block_rows, debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_build_chip(block_cols: Optional[int] = None,
+                                      block_rows: Optional[int] = None,
+                                      debug: bool = False) -> Dict[str, Any]:
+    """Canonical P4 entry point: tile_chip.py (P4) -> align_chip_seams.py
+    (P4.5, tapers every cross-block-instance seam's coupler rails to a
+    shared line) -> gds_validity_checker.py, as one command. Requires
+    OptimizedModels/block_A.gds to already be fully stitched (run
+    qleap_chipconstruction_build_block first)."""
+    return qleap_chipconstruction.qleap_chipconstruction_build_chip(
+        block_cols=block_cols, block_rows=block_rows, debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_verify_block(debug: bool = False) -> Dict[str, Any]:
+    """P5: final block-level gate -- 24 JJ polygons, manifest completeness,
+    layer conformance. Writes OptimizedModels/jj_manifest.json."""
+    return qleap_chipconstruction.qleap_chipconstruction_verify_block(debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_build_hexlattice(qubits: int, debug: bool = False) -> Dict[str, Any]:
+    """P7: assemble + fully seam-align a direct nx_unit x ny_unit grid of
+    the 6 unit-cell tiles (no "block" grouping, no vertical stagger).
+    qubits must be a multiple of 4 whose qubits/4 is a perfect square
+    (16/64/144/256 -> 2x2/4x4/6x6/8x8), matching
+    resources/qleap_qubit_layout/config/chip_types.json's own convention.
+    Preview first with render_schematic.py's hexlattice view and get
+    sign-off before calling this. Self-gates with gds_validity_checker.py;
+    writes OptimizedModels/hexlattice_{qubits}qubit.gds."""
+    return qleap_chipconstruction.qleap_chipconstruction_build_hexlattice(
+        qubits=qubits, debug=debug)
+
+
+@mcp.tool()
+def qleap_chipconstruction_status() -> Dict[str, Any]:
+    """Per-tile and per-process gate status across the whole ChipConstruction
+    campaign, independent of which process is currently being worked on."""
+    return qleap_chipconstruction.qleap_chipconstruction_status()
 
 
 def main() -> None:
