@@ -24,7 +24,14 @@ LETTERS = "ABCD"
 
 
 def _repo_root() -> Path:
-    return Path(load_config().chip_sim_root).parent
+    """The qleap repo, from the config's own marker-based resolution.
+
+    NOT ``chip_sim_root.parent``: that read the containment root as if it were
+    the legacy assets dir, so every campaign path landed one level ABOVE the
+    checkout — where a status call silently created an empty shadow
+    ``simulations/ChipConstruction/`` tree outside the repo.
+    """
+    return Path(load_config().repo_root)
 
 
 def _cct_dir() -> Path:

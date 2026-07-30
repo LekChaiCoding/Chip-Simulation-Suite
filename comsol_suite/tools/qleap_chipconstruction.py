@@ -33,7 +33,14 @@ TILES = ("U0_R0", "U0_R1", "U1_R0", "U1_R1", "U2_R0", "U2_R1")
 
 
 def _repo_root() -> Path:
-    return Path(load_config().chip_sim_root).parent
+    """The qleap repo, from the config's own marker-based resolution.
+
+    NOT ``chip_sim_root.parent``: that read the containment root as if it were
+    the legacy assets dir, so every campaign path landed one level ABOVE the
+    checkout — where a status call silently created an empty shadow
+    ``simulations/ChipConstruction/`` tree outside the repo.
+    """
+    return Path(load_config().repo_root)
 
 
 def _chipcon_dir() -> Path:
@@ -58,6 +65,32 @@ def _preflight(tool: str, argv: List[str], outputs: List[str]) -> Dict[str, Any]
         "outputs_would_write": outputs,
         "note": ("Validated only. Re-call with dry_run=False to launch as a "
                  "background job (get_job_status / get_job_result to follow)."),
+    }
+
+
+def _preflight_sync(tool: str, argv: List[str], outputs: List[str]) -> Dict[str, Any]:
+    """Dry-run reply for a MUTATING synchronous step.
+
+    These steps need no COMSOL, so the module originally ran them immediately —
+    but "needs no solver" is not the same as "changes nothing": they overwrite
+    the deliverable masks (``<TILE>_layered.gds``, ``block_A.gds``, ``chip.gds``,
+    ``hexlattice_*.gds``). With no ``dry_run`` argument they were invisible to
+    BOTH of the agent's defences, since each keys off exactly that argument
+    (``QubitDesignPipeline/agent/policy.py``): no human approval was requested
+    and no upstream-record check ran before a shipped mask was rewritten.
+
+    The genuinely read-only tools (``_gds_validity_check``, ``_gds_diff`` and
+    ``_status`` — each verified to only read and print) deliberately keep no
+    ``dry_run``: gating a check would only train people to click through.
+    ``_verify_block`` is NOT among them, despite its name — see its docstring.
+    """
+    return {
+        "dry_run": True,
+        "tool": tool,
+        "would_run": [str(a) for a in argv],
+        "outputs_would_write": outputs,
+        "note": ("Validated only — nothing was written. Re-call with "
+                 "dry_run=False to run it, which requires human approval."),
     }
 
 
@@ -124,7 +157,7 @@ def _uv_argv(script: str, extras: List[str], args: List[str]) -> List[str]:
 # ─────────────────────────────────────────────────────────────────────────────
 # P0a/P0b — schematics (foreground, no COMSOL)
 # ─────────────────────────────────────────────────────────────────────────────
-def qleap_chipconstruction_build_schematics(debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_build_schematics(dry_run: bool = True, debug: bool = False) -> Dict[str, Any]:
     """P0a/P0b: (re)build the block-internal + chip-level tiling schematics.
 
     No arguments — always regenerates ``Data/block_layout_schematic.json/.gds``
@@ -133,6 +166,8 @@ def qleap_chipconstruction_build_schematics(debug: bool = False) -> Dict[str, An
     sign-off on the rendered PNGs, done outside this tool.
     """
     argv = _uv_argv("build_schematics.py", ["--with", "gdstk", "--with", "numpy"], [])
+    if dry_run:
+        return _preflight_sync("qleap_chipconstruction_build_schematics", argv, [str(_chipcon_dir() / "layouts")])
     result = _run_sync("qleap_chipconstruction_build_schematics", argv)
     result["outputs"] = [
         str(_chipcon_dir() / "Data" / "block_layout_schematic.json"),
@@ -195,6 +230,7 @@ def qleap_chipconstruction_export_tile(
 def qleap_chipconstruction_insert_jj(
     tile: Optional[str] = None,
     all_tiles: bool = False,
+    dry_run: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
     """P1/P2 steps 4-6 (formalized as ``run_tile_pipeline.py``): JJ
@@ -212,6 +248,8 @@ def qleap_chipconstruction_insert_jj(
     args = ["--all"] if all_tiles else ["--tile", _tile(tile)]
     argv = _uv_argv("run_tile_pipeline.py", [], args)
     timeout_s = 3600 if all_tiles else 600
+    if dry_run:
+        return _preflight_sync("qleap_chipconstruction_insert_jj", argv, [str(_chipcon_dir() / "<tile>" / "work" / "<tile>_layered.gds")])
     return _run_sync("qleap_chipconstruction_insert_jj", argv,
                      timeout_s=timeout_s, debug=debug)
 
@@ -267,7 +305,7 @@ def qleap_chipconstruction_gds_diff(
 # ─────────────────────────────────────────────────────────────────────────────
 # P3/P4/P5 — assembly + verification (foreground, no COMSOL)
 # ─────────────────────────────────────────────────────────────────────────────
-def qleap_chipconstruction_assemble_block(debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_assemble_block(dry_run: bool = True, debug: bool = False) -> Dict[str, Any]:
     """P3 ONLY: merge the 6 layered per-tile GDS files into ``OptimizedModels/
     block_A.gds``, using the measured pitch from ``Data/tile_registry.json``.
     No arguments — always rebuilds from whatever ``<TILE>/work/<TILE>_layered.gds``
@@ -279,12 +317,14 @@ def qleap_chipconstruction_assemble_block(debug: bool = False) -> Dict[str, Any]
     any result you intend to use downstream (P4, tape-out review, etc.).
     """
     argv = _uv_argv("assemble_block.py", ["--with", "gdstk", "--with", "numpy"], [])
+    if dry_run:
+        return _preflight_sync("qleap_chipconstruction_assemble_block", argv, [str(_chipcon_dir() / "OptimizedModels" / "block_A.gds")])
     result = _run_sync("qleap_chipconstruction_assemble_block", argv, timeout_s=600, debug=debug)
     result["output"] = str(_chipcon_dir() / "OptimizedModels" / "block_A.gds")
     return result
 
 
-def qleap_chipconstruction_build_block(debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_build_block(dry_run: bool = True, debug: bool = False) -> Dict[str, Any]:
     """**Canonical P3 entry point.** Chains, as one command:
     ``assemble_block.py`` (P3) -> ``align_seam_couplers.py`` (P3.6: taper
     every internal tile-tile seam's coupler rails to a shared line,
@@ -296,26 +336,40 @@ def qleap_chipconstruction_build_block(debug: bool = False) -> Dict[str, Any]:
     failing step. Returns the P5 gate report as ``parsed``.
     """
     argv = _uv_argv("build_block.py", [], [])
+    if dry_run:
+        return _preflight_sync("qleap_chipconstruction_build_block", argv, [str(_chipcon_dir() / "OptimizedModels" / "block_A.gds")])
     result = _run_sync("qleap_chipconstruction_build_block", argv, timeout_s=900, debug=debug)
     result["output"] = str(_chipcon_dir() / "OptimizedModels" / "block_A.gds")
     result["manifest"] = str(_chipcon_dir() / "OptimizedModels" / "jj_manifest.json")
     return result
 
 
-def qleap_chipconstruction_verify_block(debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_verify_block(dry_run: bool = True,
+                                        debug: bool = False) -> Dict[str, Any]:
     """P5: final block-level gate. Checks 24 JJ polygons (layer 30, one per
-    qubit x 4 letters), manifest completeness, layer conformance; writes
-    ``OptimizedModels/jj_manifest.json``. Returns the parsed ``{pass,
-    problems, open_items}`` report."""
+    qubit x 4 letters), manifest completeness and layer conformance, and returns
+    the parsed ``{pass, problems, open_items}`` report.
+
+    NOT read-only, despite being a "checker": ``block_checker.py`` (its lines
+    116-117) unconditionally rewrites ``OptimizedModels/jj_manifest.json``
+    BEFORE printing its verdict, and takes no flags, so it has no read-only mode.
+    That file is a sha256-pinned ``jj_manifest`` artifact in the SEALED F3
+    record, so this gates like the builders — not like ``gds_validity_check`` and
+    ``gds_diff``, which genuinely only read and print.
+    """
     argv = _uv_argv("block_checker.py", ["--with", "gdstk", "--with", "numpy"], [])
+    manifest = _chipcon_dir() / "OptimizedModels" / "jj_manifest.json"
+    if dry_run:
+        return _preflight_sync("qleap_chipconstruction_verify_block", argv, [str(manifest)])
     result = _run_sync("qleap_chipconstruction_verify_block", argv, debug=debug)
-    result["manifest"] = str(_chipcon_dir() / "OptimizedModels" / "jj_manifest.json")
+    result["manifest"] = str(manifest)
     return result
 
 
 def qleap_chipconstruction_tile_chip(
     block_cols: Optional[int] = None,
     block_rows: Optional[int] = None,
+    dry_run: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
     """P4 ONLY: multi-block chip tiling with the confirmed vertical stagger
@@ -334,6 +388,8 @@ def qleap_chipconstruction_tile_chip(
     if block_rows is not None:
         args += ["--block-rows", str(block_rows)]
     argv = _uv_argv("tile_chip.py", ["--with", "gdstk", "--with", "numpy"], args)
+    if dry_run:
+        return _preflight_sync("qleap_chipconstruction_tile_chip", argv, [str(_chipcon_dir() / "OptimizedModels" / "chip.gds")])
     result = _run_sync("qleap_chipconstruction_tile_chip", argv, timeout_s=1200, debug=debug)
     result["output"] = str(_chipcon_dir() / "OptimizedModels" / "chip.gds")
     return result
@@ -342,6 +398,7 @@ def qleap_chipconstruction_tile_chip(
 def qleap_chipconstruction_build_chip(
     block_cols: Optional[int] = None,
     block_rows: Optional[int] = None,
+    dry_run: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
     """**Canonical P4 entry point.** Chains, as one command: ``tile_chip.py``
@@ -358,6 +415,8 @@ def qleap_chipconstruction_build_chip(
     if block_rows is not None:
         args += ["--block-rows", str(block_rows)]
     argv = _uv_argv("build_chip.py", [], args)
+    if dry_run:
+        return _preflight_sync("qleap_chipconstruction_build_chip", argv, [str(_chipcon_dir() / "OptimizedModels" / "chip.gds")])
     result = _run_sync("qleap_chipconstruction_build_chip", argv, timeout_s=1800, debug=debug)
     result["output"] = str(_chipcon_dir() / "OptimizedModels" / "chip.gds")
     return result
@@ -366,7 +425,7 @@ def qleap_chipconstruction_build_chip(
 # ─────────────────────────────────────────────────────────────────────────────
 # P7 — generalized hex-lattice chip sizes (foreground, no COMSOL)
 # ─────────────────────────────────────────────────────────────────────────────
-def qleap_chipconstruction_build_hexlattice(qubits: int, debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_build_hexlattice(qubits: int, dry_run: bool = True, debug: bool = False) -> Dict[str, Any]:
     """P7: assemble + fully seam-align a direct ``nx_unit x ny_unit`` grid of
     the 6 unit-cell tiles (no "block" grouping, no vertical stagger -- a
     plain periodic grid tiles cleanly with no parity mismatch, unlike the
@@ -382,6 +441,8 @@ def qleap_chipconstruction_build_hexlattice(qubits: int, debug: bool = False) ->
     ``OptimizedModels/hexlattice_{qubits}qubit.gds``.
     """
     argv = _uv_argv("build_hexlattice.py", ["--with", "gdstk"], ["--qubits", str(qubits)])
+    if dry_run:
+        return _preflight_sync("qleap_chipconstruction_build_hexlattice", argv, [str(_chipcon_dir() / "OptimizedModels" / f"hexlattice_{qubits}qubit.gds")])
     result = _run_sync("qleap_chipconstruction_build_hexlattice", argv,
                        timeout_s=1800, debug=debug)
     result["output"] = str(_chipcon_dir() / "OptimizedModels" / f"hexlattice_{qubits}qubit.gds")

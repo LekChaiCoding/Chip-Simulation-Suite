@@ -48,7 +48,7 @@ from .containment import ensure_contained
 from .jobs import JobRegistry
 from .tools import (cad, comsol, fitting, circuit_physics, design_params,
                     qleap, qleap_nt2, qleap_cct001, qleap_cs002,
-                    qleap_chipconstruction)
+                    qleap_chipconstruction, qleap_factory)
 
 # ── Shared singletons ────────────────────────────────────────────────────────
 CONFIG = load_config()
@@ -1407,11 +1407,12 @@ def qleap_cs002_finalize(tile: str, letter: str, record_path: str,
 # (simulations/ChipConstruction/)
 # ─────────────────────────────────────────────────────────────────────────────
 @mcp.tool()
-def qleap_chipconstruction_build_schematics(debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_build_schematics(dry_run: bool = True,
+                                            debug: bool = False) -> Dict[str, Any]:
     """P0a/P0b: (re)build the block-internal tile-arrangement schematic and
     the chip-level multi-block stagger schematic (foreground, no COMSOL).
     Gate: Alex sign-off on the rendered PNGs."""
-    return qleap_chipconstruction.qleap_chipconstruction_build_schematics(debug=debug)
+    return qleap_chipconstruction.qleap_chipconstruction_build_schematics(debug=debug, dry_run=dry_run)
 
 
 @mcp.tool()
@@ -1438,13 +1439,14 @@ def qleap_chipconstruction_export_tile(tile: str, dry_run: bool = True,
 @mcp.tool()
 def qleap_chipconstruction_insert_jj(tile: Optional[str] = None,
                                      all_tiles: bool = False,
+                                     dry_run: bool = True,
                                      debug: bool = False) -> Dict[str, Any]:
     """P1/P2 steps 4-6: JJ insertion + hooks, qubit-center measurement, Al
     probe pads, flux traps, then the validity gate -- one tile or all 6
     (foreground, no COMSOL). Run `generate_jj_configs.py` first whenever the
     shared JJ/Al-pad/flux-trap config changes."""
     return qleap_chipconstruction.qleap_chipconstruction_insert_jj(
-        tile=tile, all_tiles=all_tiles, debug=debug)
+        tile=tile, all_tiles=all_tiles, debug=debug, dry_run=dry_run)
 
 
 @mcp.tool()
@@ -1481,27 +1483,30 @@ def qleap_chipconstruction_gds_diff(
 
 
 @mcp.tool()
-def qleap_chipconstruction_assemble_block(debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_assemble_block(dry_run: bool = True,
+                                          debug: bool = False) -> Dict[str, Any]:
     """P3 ONLY: merge the 6 layered per-tile GDS files into
     OptimizedModels/block_A.gds, using the measured pitch from
     Data/tile_registry.json (foreground, no COMSOL). Pre-alignment
     intermediate state -- prefer qleap_chipconstruction_build_block for a
     result with continuous couplers across internal seams."""
-    return qleap_chipconstruction.qleap_chipconstruction_assemble_block(debug=debug)
+    return qleap_chipconstruction.qleap_chipconstruction_assemble_block(debug=debug, dry_run=dry_run)
 
 
 @mcp.tool()
-def qleap_chipconstruction_build_block(debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_build_block(dry_run: bool = True,
+                                       debug: bool = False) -> Dict[str, Any]:
     """Canonical P3 entry point: assemble_block.py (P3) -> align_seam_couplers.py
     (P3.6, tapers every internal tile-tile seam's coupler rails to a shared
     line) -> gds_validity_checker.py -> block_checker.py (P5), as one
     command. Fails loudly at the first failing step."""
-    return qleap_chipconstruction.qleap_chipconstruction_build_block(debug=debug)
+    return qleap_chipconstruction.qleap_chipconstruction_build_block(debug=debug, dry_run=dry_run)
 
 
 @mcp.tool()
 def qleap_chipconstruction_tile_chip(block_cols: Optional[int] = None,
                                      block_rows: Optional[int] = None,
+                                     dry_run: bool = True,
                                      debug: bool = False) -> Dict[str, Any]:
     """P4 ONLY: multi-block chip tiling with the confirmed vertical stagger (even
     block-columns at baseline y, odd block-columns shifted down by half a
@@ -1509,12 +1514,13 @@ def qleap_chipconstruction_tile_chip(block_cols: Optional[int] = None,
     Pre-alignment intermediate state -- prefer qleap_chipconstruction_build_chip
     for a result with continuous couplers across block-to-block seams."""
     return qleap_chipconstruction.qleap_chipconstruction_tile_chip(
-        block_cols=block_cols, block_rows=block_rows, debug=debug)
+        block_cols=block_cols, block_rows=block_rows, debug=debug, dry_run=dry_run)
 
 
 @mcp.tool()
 def qleap_chipconstruction_build_chip(block_cols: Optional[int] = None,
                                       block_rows: Optional[int] = None,
+                                      dry_run: bool = True,
                                       debug: bool = False) -> Dict[str, Any]:
     """Canonical P4 entry point: tile_chip.py (P4) -> align_chip_seams.py
     (P4.5, tapers every cross-block-instance seam's coupler rails to a
@@ -1522,18 +1528,20 @@ def qleap_chipconstruction_build_chip(block_cols: Optional[int] = None,
     OptimizedModels/block_A.gds to already be fully stitched (run
     qleap_chipconstruction_build_block first)."""
     return qleap_chipconstruction.qleap_chipconstruction_build_chip(
-        block_cols=block_cols, block_rows=block_rows, debug=debug)
+        block_cols=block_cols, block_rows=block_rows, debug=debug, dry_run=dry_run)
 
 
 @mcp.tool()
-def qleap_chipconstruction_verify_block(debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_verify_block(dry_run: bool = True,
+                                        debug: bool = False) -> Dict[str, Any]:
     """P5: final block-level gate -- 24 JJ polygons, manifest completeness,
     layer conformance. Writes OptimizedModels/jj_manifest.json."""
-    return qleap_chipconstruction.qleap_chipconstruction_verify_block(debug=debug)
+    return qleap_chipconstruction.qleap_chipconstruction_verify_block(debug=debug, dry_run=dry_run)
 
 
 @mcp.tool()
-def qleap_chipconstruction_build_hexlattice(qubits: int, debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_build_hexlattice(qubits: int, dry_run: bool = True,
+                                            debug: bool = False) -> Dict[str, Any]:
     """P7: assemble + fully seam-align a direct nx_unit x ny_unit grid of
     the 6 unit-cell tiles (no "block" grouping, no vertical stagger).
     qubits must be a multiple of 4 whose qubits/4 is a perfect square
@@ -1543,7 +1551,7 @@ def qleap_chipconstruction_build_hexlattice(qubits: int, debug: bool = False) ->
     sign-off before calling this. Self-gates with gds_validity_checker.py;
     writes OptimizedModels/hexlattice_{qubits}qubit.gds."""
     return qleap_chipconstruction.qleap_chipconstruction_build_hexlattice(
-        qubits=qubits, debug=debug)
+        qubits=qubits, debug=debug, dry_run=dry_run)
 
 
 @mcp.tool()
@@ -1551,6 +1559,47 @@ def qleap_chipconstruction_status() -> Dict[str, Any]:
     """Per-tile and per-process gate status across the whole ChipConstruction
     campaign, independent of which process is currently being worked on."""
     return qleap_chipconstruction.qleap_chipconstruction_status()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Factory control plane (read-only: the F0-F3 record chain and the line's plan)
+# ─────────────────────────────────────────────────────────────────────────────
+@mcp.tool()
+def qleap_factory_status() -> Dict[str, Any]:
+    """Where every artifact stands on the F0-F3 line: per phase, the scopes that
+    hold a signed acceptance record (hash, created_at, caveats, superseded count)
+    plus quarantined attempts; then the open andons (line stops), the embargo
+    count, and whether the append-only ledger's hash chain still verifies.
+
+    Use this to answer "is F3 sealed?", "what is accepted in F2?", "is anything
+    stopping the line?". Do NOT try to infer factory state by listing
+    directories — the record chain is the authority, and this reads it.
+    """
+    return qleap_factory.qleap_factory_status()
+
+
+@mcp.tool()
+def qleap_factory_line() -> Dict[str, Any]:
+    """The line's own plan: phases in order, the stations inside each, the gate
+    every station must clear, the subagent that owns it, its MCP tools, and the
+    human checkpoints — parsed from FACTORY.md's floor-plan table, so it is the
+    same definition the web UI renders and a human edits.
+
+    Use it to work out what comes next and what has to hold before it may start.
+    """
+    return qleap_factory.qleap_factory_line()
+
+
+@mcp.tool()
+def qleap_factory_record(phase: str, scope: str) -> Dict[str, Any]:
+    """One scope's full acceptance record.
+
+    ``phase`` is F0/F1/F2/F3; ``scope`` is ``chip``, a tile (``U0_R0``) or a qubit
+    (``U0_R0_A``) — whatever ``qleap_factory_status`` listed. Carries the achieved
+    values, artifacts with sha256s, gate reports, caveats, human sign-offs and the
+    record hash chaining it to its work order.
+    """
+    return qleap_factory.qleap_factory_record(phase=phase, scope=scope)
 
 
 def main() -> None:

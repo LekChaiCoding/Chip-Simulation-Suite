@@ -96,6 +96,8 @@ class SuiteConfig:
     """
 
     chip_sim_root: Path
+    repo_root: Path
+    assets_root: Path
     runs_dir: Path
     python_bin: str
     julia_bin: str
@@ -123,6 +125,8 @@ class SuiteConfig:
         """JSON-serialisable view, handy for the ``describe_config`` tool."""
         return {
             "chip_sim_root": str(self.chip_sim_root),
+            "repo_root": str(self.repo_root),
+            "assets_root": str(self.assets_root),
             "runs_dir": str(self.runs_dir),
             "python_bin": self.python_bin,
             "julia_bin": self.julia_bin,
@@ -139,18 +143,71 @@ def _resolve(base: Path, value: str) -> Path:
     return p if p.is_absolute() else (base / p)
 
 
+def _find_qleap_repo_root(start: Path) -> Optional[Path]:
+    """Walk up from ``start`` looking for the qleap repo's own marker.
+
+    The suite is vendored at ``<qleap repo>/resources/COMSOL Simulation Suite``,
+    so the repo is findable from this file without anyone configuring a path.
+    ``.mcp.json`` is the marker the agent side already uses
+    (``QubitDesignPipeline/agent/_paths.resolve_repo_root``), so both halves of
+    the system agree on what "the repo" means.
+    """
+    for candidate in (start, *start.parents):
+        if (candidate / ".mcp.json").is_file():
+            return candidate
+    return None
+
+
 @lru_cache(maxsize=1)
 def load_config() -> SuiteConfig:
-    """Build (and cache) the :class:`SuiteConfig` for this machine."""
+    """Build (and cache) the :class:`SuiteConfig` for this machine.
+
+    Three roots, deliberately separate — one variable used to serve all three,
+    and no single value could satisfy them (see the module docstring):
+
+    ``assets_root``
+        Base for the wrapped legacy assets (``COMSOL Simulation/...``,
+        ``JosephsonCircuit/...``, ``gds/...``). Under the original standalone
+        layout that was the suite's parent directory, which after vendoring is
+        ``<qleap repo>/resources`` — still the suite's parent, so the default
+        needs no configuration.
+    ``repo_root``
+        The qleap repo, i.e. where ``simulations/<campaign>`` lives. Found via
+        the ``.mcp.json`` marker. Campaign tools MUST derive their run dirs from
+        this: deriving them from ``chip_sim_root.parent`` used to land a level
+        above the repo, where a status call quietly created an empty shadow
+        ``simulations/ChipConstruction/`` tree outside the checkout.
+    ``chip_sim_root``
+        The containment root (:func:`comsol_suite.containment.ensure_contained`)
+        — the working universe a caller-supplied path may not leave. Defaults to
+        ``repo_root`` so the whole checkout is writable and nothing outside it
+        is, which is what the factory needs.
+    """
     toml = _load_toml()
     scripts_toml = toml.get("scripts", {}) or {}
     data_toml = toml.get("data", {}) or {}
 
-    # chip_sim_root: env > toml > default(parent of repo)
+    # assets_root: env > toml > the suite's parent (legacy "Chip Simulation" dir)
+    assets_root = Path(
+        os.environ.get("CHIP_SIM_ASSETS")
+        or toml.get("assets_root")
+        or REPO_ROOT.parent
+    ).resolve()
+
+    # repo_root: env > toml > marker search > (last resort) the assets' parent
+    repo_root = Path(
+        os.environ.get("QLEAP_REPO_ROOT")
+        or toml.get("repo_root")
+        or _find_qleap_repo_root(REPO_ROOT)
+        or assets_root.parent
+    ).resolve()
+
+    # chip_sim_root: env > toml > repo_root. Containment only; asset and campaign
+    # paths no longer key off it, so widening it cannot move anything.
     chip_sim_root = Path(
         os.environ.get("CHIP_SIM_ROOT")
         or toml.get("chip_sim_root")
-        or REPO_ROOT.parent
+        or repo_root
     ).resolve()
 
     # Interpreters.
@@ -169,14 +226,14 @@ def load_config() -> SuiteConfig:
 
     # Resolve every script / data path (env override key e.g. SCRIPT_CAD_GENERATOR).
     scripts = {
-        name: _resolve(chip_sim_root,
+        name: _resolve(assets_root,
                        os.environ.get(f"SCRIPT_{name.upper()}")
                        or scripts_toml.get(name)
                        or default)
         for name, default in _DEFAULT_SCRIPTS.items()
     }
     data = {
-        name: _resolve(chip_sim_root,
+        name: _resolve(assets_root,
                        os.environ.get(f"DATA_{name.upper()}")
                        or data_toml.get(name)
                        or default)
@@ -190,6 +247,8 @@ def load_config() -> SuiteConfig:
 
     return SuiteConfig(
         chip_sim_root=chip_sim_root,
+        repo_root=repo_root,
+        assets_root=assets_root,
         runs_dir=runs_dir,
         python_bin=python_bin,
         julia_bin=julia_bin,

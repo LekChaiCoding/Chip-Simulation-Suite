@@ -22,9 +22,11 @@ fine -> extract), ``run_sparam.py`` (one sweep), ``extract_decay.py``.
 RCS001 — ``simulations/ReadoutCouplingSimulation001``: eigenfrequency runs
 (JJ inductors -> qubit freqs; JJ current ports -> g_QR).
 
-Path resolution: the qleap repo root is ``chip_sim_root.parent`` (the suite
-is vendored at ``<repo>/resources/COMSOL Simulation Suite`` and
-``chip_sim_root`` resolves to ``<repo>/resources``).
+Path resolution: campaign paths hang off ``config.repo_root``, which the config
+finds from the ``.mcp.json`` marker (the suite is vendored at
+``<repo>/resources/COMSOL Simulation Suite``). It is deliberately NOT derived
+from ``chip_sim_root``: that variable is the containment root, and reading it as
+the legacy assets dir put every campaign path one level above the checkout.
 
 The subprocesses run on the suite's configured ``python_bin`` (the
 chip_sim_suite venv: mph, numpy, scipy, matplotlib — everything the
@@ -49,7 +51,14 @@ TILES = ["U0_R0", "U0_R1", "U1_R0", "U1_R1", "U2_R0", "U2_R1"]
 # Path helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def _repo_root() -> Path:
-    return Path(load_config().chip_sim_root).parent
+    """The qleap repo, from the config's own marker-based resolution.
+
+    NOT ``chip_sim_root.parent``: that read the containment root as if it were
+    the legacy assets dir, so every campaign path landed one level ABOVE the
+    checkout — where a status call silently created an empty shadow
+    ``simulations/ChipConstruction/`` tree outside the repo.
+    """
+    return Path(load_config().repo_root)
 
 
 def _nds_dir() -> Path:
