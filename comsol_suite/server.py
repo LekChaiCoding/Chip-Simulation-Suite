@@ -39,6 +39,7 @@ Custom device workflow (user-supplied scripts):
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -171,6 +172,7 @@ def assemble_geometry(
     output_path: str,
     top_cell_name: str = "assembly",
     merge_refs: bool = True,
+    dry_run: bool = True,
 ) -> Dict[str, Any]:
     """Assemble multiple GDS components into one top-level layout.
 
@@ -194,6 +196,19 @@ def assemble_geometry(
     Returns ``{ok, output_path, n_components, bbox, error}``.
     """
     ensure_contained(output_path, arg="output_path", tool="assemble_geometry")
+    if dry_run:
+        # Writes `output_path` wherever the caller says, and the containment
+        # root is the whole repo — so an unlucky path overwrites a sha256-pinned
+        # deliverable mask. Preview instead of trusting the argument.
+        return {
+            "dry_run": True,
+            "tool": "assemble_geometry",
+            "outputs_would_write": [str(output_path)],
+            "would_overwrite": Path(output_path).is_file(),
+            "n_components": len(components),
+            "note": ("Validated only — nothing was written. Re-call with "
+                     "dry_run=False to run it, which requires human approval."),
+        }
     return cad.assemble_geometry(
         components=components,
         output_path=output_path,
@@ -776,7 +791,9 @@ def design_params_read(yaml_path: str, key_path: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def design_params_write(yaml_path: str, key_path: str, value: Any) -> Dict[str, Any]:
+def design_params_write(yaml_path: str, key_path: str, value: Any,
+                     dry_run: bool = True,
+) -> Dict[str, Any]:
     """Atomically write a value to a design_params.yaml by dot-separated key path.
 
     Creates parent keys if missing. Uses ``os.replace`` for atomic writes so
@@ -790,6 +807,17 @@ def design_params_write(yaml_path: str, key_path: str, value: Any) -> Dict[str, 
     Returns ``{ok, key_path, value, yaml_path, error}``.
     """
     ensure_contained(yaml_path, arg="yaml_path", tool="design_params_write")
+    if dry_run:
+        # Writes a pipeline source-of-truth YAML by dot path, atomically, from an
+        # F1 station role — so ungated it also skips the F0-record/andon check.
+        return {
+            "dry_run": True,
+            "tool": "design_params_write",
+            "outputs_would_write": [str(yaml_path)],
+            "would_set": {key_path: value},
+            "note": ("Validated only — nothing was written. Re-call with "
+                     "dry_run=False to run it, which requires human approval."),
+        }
     try:
         design_params.write_param(yaml_path, key_path, value)
         return {"ok": True, "key_path": key_path, "value": value,
@@ -1073,13 +1101,27 @@ def qleap_run_notch_sweep(
 
 @mcp.tool()
 def qleap_extract_notch(unit: str, row: str,
-                        stage: str = "final") -> Dict[str, Any]:
+                        stage: str = "final",
+                     dry_run: bool = True,
+) -> Dict[str, Any]:
     """Post-process NDS001 sweep CSVs (foreground, seconds).
 
     ``stage='window'``: locate coarse notches, write per-letter fine flists.
     ``stage='final'``: merged kappa(omega) -> notch position/depth, kappa(f_q),
     T1, readout peak; returns the notch summary and the figure path.
     """
+    if dry_run:
+        # Overwrites <TILE>_notch_summary.json / _fine_windows.json — campaign
+        # source-of-truth read by summarize_results.py and plot_notch_zoom.py,
+        # and written even when the run then exits non-zero.
+        return {
+            "dry_run": True,
+            "tool": "qleap_extract_notch",
+            "outputs_would_write": [f"{unit}_{row}: <TILE>_notch_summary.json, "
+                                    f"<TILE>_fine_windows.json, figures/"],
+            "note": ("Validated only — nothing was written. Re-call with "
+                     "dry_run=False to run it, which requires human approval."),
+        }
     return qleap.qleap_extract_notch(unit=unit, row=row, stage=stage)
 
 
@@ -1144,9 +1186,23 @@ def qleap_run_eigen_gqr(
 
 @mcp.tool()
 def qleap_extract_gqr(unit: str, row: str,
-                      stage: str = "final") -> Dict[str, Any]:
+                      stage: str = "final",
+                     dry_run: bool = True,
+) -> Dict[str, Any]:
     """Post-process RCS001 eigen CSVs (foreground, seconds): qubit
     frequencies after run 1, g_QR summary after run 2."""
+    if dry_run:
+        # Overwrites <TILE>_qubit_freqs.json — the most load-bearing intermediate
+        # in the repo (run_eigen.py blocks --run 2 without it; extract_decay.py
+        # takes f_q from it) — plus <TILE>_gqr_summary.json.
+        return {
+            "dry_run": True,
+            "tool": "qleap_extract_gqr",
+            "outputs_would_write": [f"{unit}_{row}: <TILE>_qubit_freqs.json, "
+                                    f"<TILE>_gqr_summary.json"],
+            "note": ("Validated only — nothing was written. Re-call with "
+                     "dry_run=False to run it, which requires human approval."),
+        }
     return qleap.qleap_extract_gqr(unit=unit, row=row, stage=stage)
 
 
@@ -1171,7 +1227,8 @@ def qleap_nt2_linear_retune(tile: str, letter: str, force: bool = False,
 def qleap_nt2_purcell_check(tile: str, letters: str = "ABCD",
                            csv_override: Optional[str] = None,
                            no_plot: bool = False, record_suffix: str = "LINEAR",
-                           debug: bool = False) -> Dict[str, Any]:
+                           dry_run: bool = True,
+                            debug: bool = False) -> Dict[str, Any]:
     """Foreground kappa(f_q) -> Purcell T1 gate from existing linear/ratio
     probe CSVs. ``record_suffix`` selects ``"LINEAR"`` or ``"RATIO"``
     records."""
@@ -1179,7 +1236,7 @@ def qleap_nt2_purcell_check(tile: str, letters: str = "ABCD",
         ensure_contained(csv_override, arg="csv_override", tool="qleap_nt2_purcell_check")
     return qleap_nt2.qleap_nt2_purcell_check(
         tile=tile, letters=letters, csv_override=csv_override,
-        no_plot=no_plot, record_suffix=record_suffix, debug=debug)
+        no_plot=no_plot, record_suffix=record_suffix, debug=debug, dry_run=dry_run)
 
 
 @mcp.tool()
@@ -1279,12 +1336,13 @@ def qleap_nt2_verify_merged_notches(tile: str, model_path: Optional[str] = None,
 
 
 @mcp.tool()
-def qleap_nt2_publish_optimized(tile: str, debug: bool = False) -> Dict[str, Any]:
+def qleap_nt2_publish_optimized(tile: str, dry_run: bool = True,
+                                debug: bool = False) -> Dict[str, Any]:
     """Publish an accepted merged tile model to
     ``simulations/OptimizedModels/{tile}/`` (foreground: file I/O + sha256,
     no COMSOL). Writes outside NotchTuning002 by design; refuses to
     overwrite an already-published tile."""
-    return qleap_nt2.qleap_nt2_publish_optimized(tile=tile, debug=debug)
+    return qleap_nt2.qleap_nt2_publish_optimized(tile=tile, debug=debug, dry_run=dry_run)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

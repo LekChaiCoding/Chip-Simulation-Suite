@@ -121,6 +121,25 @@ def _parse_trailing_json(text: str) -> Optional[Any]:
     return None
 
 
+def _preflight_sync(tool: str, argv: List[str], outputs: List[str]) -> Dict[str, Any]:
+    """Dry-run reply for a MUTATING synchronous step.
+
+    Distinct from `_preflight`, whose note talks about polling a background job.
+    These steps need no COMSOL, but "needs no solver" is not "changes nothing":
+    they write publish deliverables and per-letter acceptance verdicts, and with
+    no `dry_run` argument they were invisible to BOTH of the agent's defences
+    (`QubitDesignPipeline/agent/policy.py` keys off exactly that argument).
+    """
+    return {
+        "dry_run": True,
+        "tool": tool,
+        "would_run": [str(a) for a in argv],
+        "outputs_would_write": outputs,
+        "note": ("Validated only — nothing was written. Re-call with "
+                 "dry_run=False to run it, which requires human approval."),
+    }
+
+
 def _preflight(tool: str, argv: List[str], outputs: List[str]) -> Dict[str, Any]:
     return {
         "dry_run": True,
@@ -218,6 +237,7 @@ def qleap_nt2_purcell_check(
     csv_override: Optional[str] = None,
     no_plot: bool = False,
     record_suffix: str = "LINEAR",
+    dry_run: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
     """kappa(f_q) -> Purcell T1 gate from existing linear/ratio probe CSVs.
@@ -252,6 +272,9 @@ def qleap_nt2_purcell_check(
         argv.append("--no-plot")
 
     log = nt2 / "overnight" / "logs" / f"mcp_purcell_check_{tile}.log"
+    if dry_run:
+        return _preflight_sync("qleap_nt2_purcell_check", argv, [
+            str(_nt2_dir() / tile / "<L>" / "Data" / "analysis" / "purcell_check.json")])
     res = run_command(argv, log_path=log, cwd=nt2, timeout_s=300, debug=debug)
     return {"ok": res.ok, "returncode": res.returncode,
             "rows": _parse_trailing_json(res.log_tail(1000)),
@@ -585,7 +608,8 @@ def qleap_nt2_verify_merged_notches(
                    extra_files=[out_path], timeout_s=4 * 4 * 5400, debug=debug)
 
 
-def qleap_nt2_publish_optimized(tile: str, debug: bool = False) -> Dict[str, Any]:
+def qleap_nt2_publish_optimized(tile: str, dry_run: bool = True,
+                                debug: bool = False) -> Dict[str, Any]:
     """Publish an accepted merged tile model to
     ``simulations/OptimizedModels/{tile}/`` (mph + knob manifest + README +
     figures, sha256-stamped). Foreground: file I/O + hashing, no COMSOL.
@@ -611,6 +635,9 @@ def qleap_nt2_publish_optimized(tile: str, debug: bool = False) -> Dict[str, Any
     argv = [_python_bin(), str(nt2 / "tools" / "publish_optimized.py"),
             "--tile", tile]
     log = nt2 / tile / "Data" / "analysis" / f"mcp_publish_{tile}.log"
+    if dry_run:
+        return _preflight_sync("qleap_nt2_publish_optimized", argv, [
+            str(_repo_root() / "simulations" / "OptimizedModels" / tile)])
     res = run_command(argv, log_path=log, cwd=nt2, timeout_s=600, debug=debug)
     return {"ok": res.ok, "returncode": res.returncode,
             "result": _parse_trailing_json(res.log_tail(500)),
