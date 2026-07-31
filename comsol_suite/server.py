@@ -1508,6 +1508,23 @@ def qleap_chipconstruction_insert_jj(tile: Optional[str] = None,
 
 
 @mcp.tool()
+def qleap_chipconstruction_render_cell_thumbs(tile: Optional[str] = None,
+                                              all_tiles: bool = False,
+                                              dry_run: bool = True,
+                                              debug: bool = False) -> Dict[str, Any]:
+    """Regenerate the Chippy Console's per-qubit and per-unit-cell line-art
+    thumbnails (layouts/cells/<TILE>_<LETTER>.png + layouts/cells/<TILE>.png)
+    from each tile's layered mask -- one tile or all of them (foreground, no
+    COMSOL). Requires <TILE>_layered.gds + Data/<TILE>_qubit_origin.json, i.e.
+    qleap_chipconstruction_insert_jj has run. Gated like the builders: the
+    Console SHOWS these, so a stale one makes the UI describe a mask that no
+    longer exists. Slow (~40-70 s/tile: the strip-decomposed etch must be
+    unioned before it can be stroked as line art)."""
+    return qleap_chipconstruction.qleap_chipconstruction_render_cell_thumbs(
+        tile=tile, all_tiles=all_tiles, debug=debug, dry_run=dry_run)
+
+
+@mcp.tool()
 def qleap_chipconstruction_gds_validity_check(
         gds_path: str, layer_config: Optional[str] = None,
         degenerate_tolerance_um2: Optional[float] = None,

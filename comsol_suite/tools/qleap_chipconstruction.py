@@ -255,6 +255,59 @@ def qleap_chipconstruction_insert_jj(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Console thumbnails (foreground, no COMSOL)
+# ─────────────────────────────────────────────────────────────────────────────
+def qleap_chipconstruction_render_cell_thumbs(
+    tile: Optional[str] = None,
+    all_tiles: bool = False,
+    dry_run: bool = True,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Regenerate the Chippy Console's per-qubit and per-unit-cell line-art
+    thumbnails (``layouts/cells/<TILE>_<LETTER>.png`` + ``layouts/cells/
+    <TILE>.png``) from each tile's layered mask. One of ``tile`` or
+    ``all_tiles=True`` is required. No COMSOL — runs synchronously.
+
+    Gated like the builders, not like the checkers: these PNGs are what the
+    Console SHOWS for a qubit, so a stale or missing one makes the UI describe
+    geometry that isn't on the mask any more — the exact failure the Console's
+    honest-source rule exists to prevent.
+
+    Slow for a rendering step (~40-70 s per tile, so ~5 min for all six): the
+    exported etch is strip-decomposed into ~24k slabs per tile and has to be
+    unioned before it can be stroked as line art, or every internal slab edge
+    draws and the thumbnail comes out as hatching. See the script's docstring.
+
+    Prerequisites per tile: ``<TILE>/work/<TILE>_layered.gds`` and
+    ``Data/<TILE>_qubit_origin.json`` (i.e. ``_insert_jj`` has run). Tiles with
+    no layered GDS are reported in ``tiles_skipped`` rather than failing the
+    call; a tile that HAS a mask but is missing a letter's measured centre is a
+    hard error, because a Console card with a hole in it looks deliberate.
+
+    The framing knobs (crop window, pixel size, stroke weights) are deliberately
+    not exposed here — they are script flags for a human iterating on the look,
+    and the Console depends on the defaults. Nor is the output directory: the
+    Console reads one fixed path, and an overridable one is just a way to write
+    PNGs somewhere nothing serves them.
+    """
+    if bool(tile) == bool(all_tiles):
+        raise ValueError("pass exactly one of tile= or all_tiles=True")
+    args = ["--all"] if all_tiles else ["--tile", _tile(tile)]
+    argv = _uv_argv("render_cell_thumbs.py",
+                    ["--with", "gdstk", "--with", "matplotlib", "--with", "numpy"],
+                    args)
+    cells_dir = _chipcon_dir() / "layouts" / "cells"
+    if dry_run:
+        return _preflight_sync(
+            "qleap_chipconstruction_render_cell_thumbs", argv,
+            [str(cells_dir / "<tile>_<letter>.png"), str(cells_dir / "<tile>.png")])
+    result = _run_sync("qleap_chipconstruction_render_cell_thumbs", argv,
+                       timeout_s=2400 if all_tiles else 600, debug=debug)
+    result["out_dir"] = str(cells_dir)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Generic checkers (foreground, repo-generic per FACTORY_LAYOUT.md)
 # ─────────────────────────────────────────────────────────────────────────────
 def qleap_chipconstruction_gds_validity_check(
@@ -458,6 +511,7 @@ def qleap_chipconstruction_status() -> Dict[str, Any]:
     root = _chipcon_dir()
     out: Dict[str, Any] = {"run_dir": str(root), "tiles": {}, "block": {}, "chip": {}}
 
+    cells_dir = root / "layouts" / "cells"
     for tile in TILES:
         d = root / tile
         work = d / "work"
@@ -467,6 +521,11 @@ def qleap_chipconstruction_status() -> Dict[str, Any]:
             "jj_pos_json": (root / "Data" / f"{tile}_JJ_pos.json").is_file(),
             "coupler_extend_manifest": (root / "Data" / f"{tile}_coupler_extend_manifest.json").is_file(),
             "render": (d / "figures" / f"{tile}_jj_render.png").is_file(),
+            # Console thumbnails (qleap_chipconstruction_render_cell_thumbs).
+            # Counted from disk, not compared against a letter list this module
+            # does not own -- the scope grammar lives in the design registry.
+            "cell_thumb": (cells_dir / f"{tile}.png").is_file(),
+            "qubit_thumbs": len(list(cells_dir.glob(f"{tile}_*.png"))),
         }
         out["tiles"][tile] = st
 

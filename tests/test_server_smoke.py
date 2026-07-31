@@ -65,6 +65,7 @@ def test_tools_register_on_server():
         "qleap_chipconstruction_mph_preflight",
         "qleap_chipconstruction_export_tile",
         "qleap_chipconstruction_insert_jj",
+        "qleap_chipconstruction_render_cell_thumbs",
         "qleap_chipconstruction_gds_validity_check",
         "qleap_chipconstruction_gds_diff",
         "qleap_chipconstruction_assemble_block",
