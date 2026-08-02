@@ -182,7 +182,8 @@ class JobRegistry:
         write_job_json(self._job_json(job.job_id), job.to_public())
 
     @staticmethod
-    def _reconcile_unfinished(data: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
+    def _reconcile_unfinished(data: Dict[str, Any], run_dir: Path, *,
+                              at_startup: bool) -> Dict[str, Any]:
         """Decide what a record still marked ``pending``/``running`` really means.
 
         This used to be unconditional: every ``running`` record found at startup
@@ -195,16 +196,27 @@ class JobRegistry:
 
         Three cases, in order:
 
-        * no ``spec.json`` — a legacy in-process job, which really could not
-          have survived this server's restart. Old conclusion still holds.
+        * no ``spec.json`` — a legacy in-process job. Whether that means "dead"
+          depends entirely on ``at_startup``; see below.
         * a worker we can find — leave the record exactly as written.
         * a worker that is gone, or that never appeared within the startup
           grace — failed, and say which.
+
+        ``at_startup`` is load-bearing, and getting it wrong was a real bug.
+        "No spec.json, therefore the server that owned it is gone" is only true
+        during :meth:`_rehydrate`, where by definition this process did not
+        start the job. Applied on every poll it declares a *live* in-process job
+        dead: the thread is still running, the record still says ``running``,
+        and the caller is handed ``failed: interrupted: MCP server restarted
+        mid-run`` — a failure that never happened, with a fabricated cause. The
+        job's real result then lands on disk correctly while this process keeps
+        serving the poisoned verdict from its cache. So on a live poll, an
+        in-process record is reported exactly as written.
         """
         if data.get("status") not in ("pending", "running"):
             return data
         if not (run_dir / "spec.json").is_file():
-            if data.get("status") != "running":
+            if data.get("status") != "running" or not at_startup:
                 return data
             data = dict(data)
             data["status"] = "failed"
@@ -247,7 +259,7 @@ class JobRegistry:
                 # list_jobs misleading; record the corpse instead.
                 self._adopt_unreadable(jdir)
                 continue
-            data = self._reconcile_unfinished(data, jdir)
+            data = self._reconcile_unfinished(data, jdir, at_startup=True)
             job = Job(**{k: data[k] for k in JOB_FIELDS if k in data})
             self._jobs[job.job_id] = job
 
@@ -512,7 +524,7 @@ class JobRegistry:
         # away hours of work, and reporting a dead one as running makes an agent
         # poll forever.
         return Job(**{k: v for k, v in
-                      self._reconcile_unfinished(data, jf.parent).items()
+                      self._reconcile_unfinished(data, jf.parent, at_startup=False).items()
                       if k in JOB_FIELDS})
 
     def list(self) -> List[Job]:

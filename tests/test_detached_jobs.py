@@ -207,8 +207,58 @@ def test_unreadable_job_json_is_surfaced_not_skipped(tmp_path: Path):
     assert listed["ghost_tool-deadbeef"].tool == "ghost_tool"
 
 
+def test_a_live_in_process_job_is_not_declared_dead_by_a_poll(tmp_path: Path):
+    """Polling a running THREAD job must not fabricate a "server restarted" failure.
+
+    Regression test for a bug introduced by the detach work itself and caught by
+    an adversarial audit. "No spec.json, therefore the server that owned it is
+    gone" is only true during rehydration. Applied on every poll it declared a
+    live in-process job dead: the thread was still running, job.json still said
+    running, and the caller got `failed: interrupted: MCP server restarted
+    mid-run` — a failure that never happened, cached thereafter by the
+    terminal-status short-circuit so the real result became unreachable in that
+    process.
+
+    Reachable through the live MCP surface: the five fitting tools
+    (run_abcd_fit, run_abcd_fit_parallel, run_generic_fit, fit_stub_sweep,
+    analyze_dispersion) all still take the in-process path with
+    background=True.
+    """
+    runs = tmp_path / "runs"
+    reg = JobRegistry(runs)
+    gate = tmp_path / "release"
+
+    def slow_worker(job):
+        while not gate.exists():
+            time.sleep(0.05)
+        return {"ok": True, "summary": "real answer"}
+
+    job = reg.submit("in_process", slow_worker, background=True)
+    time.sleep(0.5)
+    assert (job.run_dir and not (Path(job.run_dir) / "spec.json").exists()), \
+        "precondition: an in-process job writes no spec.json"
+
+    mid_run = reg.get(job.job_id)
+    assert mid_run.status == "running", \
+        f"a live thread job was reported {mid_run.status!r}: {mid_run.error!r}"
+
+    gate.write_text("go")
+    for _ in range(100):
+        if reg.get(job.job_id).status in ("completed", "failed"):
+            break
+        time.sleep(0.1)
+    finished = reg.get(job.job_id)
+    assert finished.status == "completed", finished.error
+    assert finished.result["summary"] == "real answer", \
+        "the real result must still be reachable after a mid-run poll"
+
+
 def test_legacy_running_record_without_a_spec_is_still_failed(tmp_path: Path):
-    """An in-process job really could not survive its server; keep saying so."""
+    """An in-process job really could not survive its server; keep saying so.
+
+    The startup case, and the only one where the spec-less rule applies — this
+    process did not start the job, so a `running` record means its owner died.
+    """
     runs = tmp_path / "runs"
     jdir = runs / "legacy-00000000"
     jdir.mkdir(parents=True)
