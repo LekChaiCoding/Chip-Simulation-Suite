@@ -1607,11 +1607,11 @@ def qleap_chipconstruction_build_chip(block_cols: Optional[int] = None,
 
 
 @mcp.tool()
-def qleap_chipconstruction_verify_block(dry_run: bool = True,
-                                        debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_verify_block(debug: bool = False) -> Dict[str, Any]:
     """P5: final block-level gate -- 24 JJ polygons, manifest completeness,
-    layer conformance. Writes OptimizedModels/jj_manifest.json."""
-    return qleap_chipconstruction.qleap_chipconstruction_verify_block(debug=debug, dry_run=dry_run)
+    layer conformance, and jj_manifest.json agreeing with the per-tile
+    jj_geometry.json files. Read-only: writes nothing on a clean run."""
+    return qleap_chipconstruction.qleap_chipconstruction_verify_block(debug=debug)
 
 
 @mcp.tool()

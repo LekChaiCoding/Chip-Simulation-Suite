@@ -396,25 +396,28 @@ def qleap_chipconstruction_build_block(dry_run: bool = True, debug: bool = False
     return result
 
 
-def qleap_chipconstruction_verify_block(dry_run: bool = True,
-                                        debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_verify_block(debug: bool = False) -> Dict[str, Any]:
     """P5: final block-level gate. Checks 24 JJ polygons (layer 30, one per
     qubit x 4 letters), manifest completeness and layer conformance, and returns
     the parsed ``{pass, problems, open_items}`` report.
 
-    NOT read-only, despite being a "checker": ``block_checker.py`` (its lines
-    116-117) unconditionally rewrites ``OptimizedModels/jj_manifest.json``
-    BEFORE printing its verdict, and takes no flags, so it has no read-only mode.
-    That file is a sha256-pinned ``jj_manifest`` artifact in the SEALED F3
-    record, so this gates like the builders — not like ``gds_validity_check`` and
-    ``gds_diff``, which genuinely only read and print.
+    Read-only, and now genuinely so — it joins ``gds_validity_check`` and
+    ``gds_diff`` in taking no ``dry_run``, because gating a check that changes
+    nothing only trains people to click through.
+
+    It did NOT used to be. ``block_checker.py`` unconditionally rewrote
+    ``OptimizedModels/jj_manifest.json`` before printing its verdict, and that
+    file is a sha256-pinned ``jj_manifest`` artifact of the SEALED F3 record, so
+    merely running the gate broke every later intake on hash drift — and a
+    checker that overwrites its own subject could never fail on drift in the
+    first place. The script now COMPARES the published manifest against the
+    aggregate of the six per-tile ``jj_geometry.json`` files and reports a
+    disagreement as a problem; publishing moved behind ``--write-manifest``,
+    which only ``build_block.py`` passes.
     """
     argv = _uv_argv("block_checker.py", ["--with", "gdstk", "--with", "numpy"], [])
-    manifest = _chipcon_dir() / "OptimizedModels" / "jj_manifest.json"
-    if dry_run:
-        return _preflight_sync("qleap_chipconstruction_verify_block", argv, [str(manifest)])
     result = _run_sync("qleap_chipconstruction_verify_block", argv, debug=debug)
-    result["manifest"] = str(manifest)
+    result["manifest"] = str(_chipcon_dir() / "OptimizedModels" / "jj_manifest.json")
     return result
 
 
