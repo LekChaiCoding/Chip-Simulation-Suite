@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from ..config import load_config
-from ..jobs import Job, JobRegistry
+from ..jobs import JobRegistry
 from ..runner import run_command
 
 TILES = ("U0_R0", "U0_R1", "U1_R0", "U1_R1", "U2_R0", "U2_R1")
@@ -121,24 +121,17 @@ def _preflight(tool: str, argv: List[str], outputs: List[str]) -> Dict[str, Any]
 
 def _launch(registry: JobRegistry, tool: str, argv: List[str], cwd: Path,
             collect_dir: Path, timeout_s: float, debug: bool) -> Dict[str, Any]:
-    def worker(job: Job) -> Dict[str, Any]:
-        res = run_command(argv, log_path=Path(job.log_path), cwd=cwd,
-                          timeout_s=timeout_s, debug=debug)
-        files: List[str] = []
-        if collect_dir.is_dir():
-            for pat in ("*.json", "*.csv", "*.s5p", "*.png", "*.mph"):
-                files.extend(str(p) for p in collect_dir.rglob(pat))
-        return {
-            "ok": res.ok,
-            "returncode": res.returncode,
-            "duration_s": round(res.duration_s, 2),
-            "output_files": sorted(set(files)),
-            "log_tail": res.log_tail(30),
-            "summary": f"{tool} finished rc={res.returncode}",
-            "error": None if res.ok else f"{tool} failed (see run.log)",
-        }
+    """Run argv in a DETACHED worker; collect the optimizer's artifacts.
 
-    job = registry.submit(tool, worker, background=True)
+    Detached, not threaded: this server is spawned per MCP client and a daemon
+    thread dies with it. A CS002 optimize is a Nelder-Mead loop over ~16 COMSOL
+    solves, so this is exactly the length of job that was being lost. See
+    :mod:`comsol_suite.job_runner`.
+    """
+    job = registry.submit_detached(
+        tool, argv, cwd=cwd, timeout_s=timeout_s, debug=debug,
+        collect_dir=collect_dir,
+        collect_patterns=("*.json", "*.csv", "*.s5p", "*.png", "*.mph"))
     return {"job_id": job.job_id, "status": job.status}
 
 

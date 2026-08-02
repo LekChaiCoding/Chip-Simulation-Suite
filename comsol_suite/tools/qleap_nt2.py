@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config import load_config
-from ..jobs import Job, JobRegistry
+from ..jobs import JobRegistry
 from ..runner import run_command
 
 TILES = ("U0_R0", "U0_R1", "U1_R0", "U1_R1", "U2_R0", "U2_R1")
@@ -155,34 +155,20 @@ def _launch(registry: JobRegistry, tool: str, argv: List[str], cwd: Path,
             collect_dir: Path, timeout_s: float, debug: bool,
             extra_files: Optional[List[Path]] = None,
             ok_returncodes: tuple = (0,)) -> Dict[str, Any]:
-    """Submit argv as a background job; collect CSV/JSON/PNG outputs.
+    """Run argv in a DETACHED worker; collect CSV/JSON/PNG outputs.
 
     ``ok_returncodes`` lists return codes that mean "ran to completion" —
     some of these gates use a non-zero exit code to carry a verdict rather
     than signal a crash (see module docstring).
-    """
-    def worker(job: Job) -> Dict[str, Any]:
-        res = run_command(argv, log_path=Path(job.log_path), cwd=cwd,
-                          timeout_s=timeout_s, debug=debug)
-        files: List[str] = []
-        if collect_dir.is_dir():
-            for pat in ("*.csv", "*.json", "*.png"):
-                files.extend(str(p) for p in collect_dir.rglob(pat))
-        for f in (extra_files or []):
-            if f.is_file():
-                files.append(str(f))
-        ok = (res.returncode in ok_returncodes) and not res.timed_out
-        return {
-            "ok": ok,
-            "returncode": res.returncode,
-            "duration_s": round(res.duration_s, 2),
-            "output_files": sorted(set(files)),
-            "log_tail": res.log_tail(30),
-            "summary": f"{tool} finished rc={res.returncode}",
-            "error": None if ok else f"{tool} failed (see run.log)",
-        }
 
-    job = registry.submit(tool, worker, background=True)
+    Detached, not threaded: this server is spawned per MCP client and a daemon
+    thread dies with it. An NT2 notch sweep runs for hours, so losing one at the
+    end cost the whole solve. See :mod:`comsol_suite.job_runner`.
+    """
+    job = registry.submit_detached(
+        tool, argv, cwd=cwd, timeout_s=timeout_s, debug=debug,
+        collect_dir=collect_dir, collect_patterns=("*.csv", "*.json", "*.png"),
+        extra_files=tuple(extra_files or ()), ok_returncodes=ok_returncodes)
     return {"job_id": job.job_id, "status": job.status}
 
 

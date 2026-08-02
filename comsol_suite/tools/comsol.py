@@ -60,7 +60,7 @@ from typing import Any, Dict, List, Optional
 
 from ..config import load_config
 from ..jobs import Job, JobRegistry
-from ..runner import patch_script, run_command
+from ..runner import patch_script
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -150,30 +150,8 @@ def _launch_with_script(
     debug: bool,
     timeout_s: float,
 ) -> Dict[str, Any]:
-    """Submit an already-built argv as a background job, collecting MPH + CSV."""
-    def worker(job: Job) -> Dict[str, Any]:
-        out.mkdir(parents=True, exist_ok=True)
-        res = run_command(argv, log_path=Path(job.log_path),
-                         cwd=out, timeout_s=timeout_s, debug=debug)
-        # Collect all outputs, with MPH files surfaced separately.
-        all_files: List[str] = []
-        for pat in ["*.mph", "*.csv", "*.dat", "*.s2p"]:
-            all_files.extend(str(p) for p in out.rglob(pat))
-        all_files = sorted(set(all_files))
-        mph_paths = [f for f in all_files if f.endswith(".mph")]
-        return {
-            "ok": res.ok,
-            "output_files": all_files,
-            "mph_paths": mph_paths,  # COMSOL models the user can open and inspect
-            "returncode": res.returncode,
-            "duration_s": round(res.duration_s, 2),
-            "summary": f"{tool} finished rc={res.returncode}; "
-                       f"{len(mph_paths)} MPH file(s) saved",
-            "error": None if res.ok else f"{tool} failed (see run.log)",
-        }
-
-    job = registry.submit(tool, worker, background=True)
-    return {"job_id": job.job_id, "status": job.status}
+    """Run an already-built argv in a detached worker, collecting MPH + CSV."""
+    return _start_solve(registry, registry.reserve(tool), argv, out, debug, timeout_s)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -297,60 +275,208 @@ def build_comsol_model(
         return result
 
     # Real run: patch script and submit as background job.
-    def worker(job: Job) -> Dict[str, Any]:
-        out.mkdir(parents=True, exist_ok=True)
-        patched = patch_script(
-            src,
-            Path(job.run_dir) / "_build_patched.py",
-            {
-                r"^ROOT\s*=.*$": f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
-                r"^OUT_DIR\s*=.*$": f'OUT_DIR = r"{out.as_posix()}"',
-                r"^sys\.path\.insert.*$":
-                    f'sys.path.insert(0, r"{src.parent.as_posix()}")',
-                # Inject param overrides as module-level dicts; the build
-                # function reads these if present (see recreate_and_solve.py).
-                r"^REF_CSV\s*=.*$": (
-                    f'REF_CSV = r"{cfg.chip_sim_root.as_posix()}'
-                    f'/java_outputs/sparams_clean.csv"\n'
-                    f'GEOM_PARAM_OVERRIDES = {repr(all_geom)}\n'
-                    f'MATERIAL_PARAM_OVERRIDES = {repr(material_params or {})}'
-                ),
-            },
-        )
-        real_argv = [cfg.python_bin, str(patched), "--cores", str(comsol_cores)]
-        if build_only:
-            real_argv.append("--build-only")
-        return _run_and_collect(real_argv, Path(job.log_path), out, debug, 7200)
-
-    job = registry.submit("build_comsol_model", worker, background=True)
-    return {"job_id": job.job_id, "status": job.status}
+    job = registry.reserve("build_comsol_model")
+    out.mkdir(parents=True, exist_ok=True)
+    patched = patch_script(
+        src,
+        Path(job.run_dir) / "_build_patched.py",
+        {
+            r"^ROOT\s*=.*$": f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+            r"^OUT_DIR\s*=.*$": f'OUT_DIR = r"{out.as_posix()}"',
+            r"^sys\.path\.insert.*$":
+                f'sys.path.insert(0, r"{src.parent.as_posix()}")',
+            # Inject param overrides as module-level dicts; the build
+            # function reads these if present (see recreate_and_solve.py).
+            r"^REF_CSV\s*=.*$": (
+                f'REF_CSV = r"{cfg.chip_sim_root.as_posix()}'
+                f'/java_outputs/sparams_clean.csv"\n'
+                f'GEOM_PARAM_OVERRIDES = {repr(all_geom)}\n'
+                f'MATERIAL_PARAM_OVERRIDES = {repr(material_params or {})}'
+            ),
+        },
+    )
+    real_argv = [cfg.python_bin, str(patched), "--cores", str(comsol_cores)]
+    if build_only:
+        real_argv.append("--build-only")
+    return _start_solve(registry, job, real_argv, out, debug, 7200)
 
 
-def _run_and_collect(
+# File types every solve in this module can produce. Passed to the detached
+# worker as its collect patterns, so the artifact list is built where the
+# artifacts are.
+SOLVE_ARTIFACT_PATTERNS = ("*.mph", "*.csv", "*.dat", "*.s2p")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Post-processors — run by comsol_suite.job_runner IN THE DETACHED WORKER
+# ─────────────────────────────────────────────────────────────────────────────
+# These used to be the tail of an in-process worker closure. They are plain
+# functions now because the work happens in another process, which is the whole
+# point: a closure cannot outlive the server, and these solves must.
+#
+# Each takes the runner's raw result plus the spec, and returns the result the
+# MCP caller sees. They may downgrade ``ok`` (a solve that ran cleanly but
+# produced an unusable answer is not a success); they may not upgrade it.
+
+def post_surface_mph(result: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Surface the MPH files among the collected outputs — the ones a human can
+    open and inspect — and say how many were saved."""
+    mph_paths = [f for f in result.get("output_files", []) if f.endswith(".mph")]
+    return {
+        **result,
+        "mph_paths": mph_paths,
+        "summary": (f"{spec['tool']} finished rc={result['returncode']}; "
+                    f"{len(mph_paths)} MPH file(s) saved"),
+        "error": None if result.get("ok") else "process failed (see run.log)",
+    }
+
+
+def post_validate_geometry(result: Dict[str, Any], spec: Dict[str, Any], *,
+                           out_dir: str, checker_script: str) -> Dict[str, Any]:
+    """Report which checker ran and where its JSON report landed."""
+    return {
+        **result,
+        "passed": result.get("returncode") == 0,
+        "checker_script": checker_script,
+        "report": sorted(str(p) for p in Path(out_dir).rglob("*.json")),
+        "error": (None if result.get("ok")
+                  else "validate_geometry failed (see run.log)"),
+    }
+
+
+def post_parameter_inversion(
+    result: Dict[str, Any],
+    spec: Dict[str, Any],
+    *,
+    csv_out: str,
+    param_name: str,
+    param_unit: str,
+    param_range: List[float],
+    mode_index: int,
+    poly_degree: int,
+    target_value: float,
+    post_physics: Optional[str],
+    lumped_inductance_H: Optional[float],
+) -> Dict[str, Any]:
+    """Invert the swept calibration curve for the parameter value hitting target.
+
+    Every early return below is ``ok: False`` with a reason a human can act on.
+    The sweep itself may have run perfectly and still not answer the question —
+    too few points for the fit, or a target outside the range that was swept —
+    and reporting that as success would hand back a fabricated recommendation.
+    """
+    import csv as _csv
+    import math
+
+    if not result.get("ok"):
+        return {**result,
+                "error": f"Geometry sweep failed (rc={result.get('returncode')}); "
+                         f"see run.log"}
+    csv_path = Path(csv_out)
+    if not csv_path.is_file():
+        return {**result, "ok": False, "error": f"Sweep CSV not produced: {csv_out}"}
+
+    with open(csv_path, newline="") as fh:
+        rows = list(_csv.DictReader(fh))
+    if not rows:
+        return {**result, "ok": False, "error": "Sweep CSV is empty"}
+
+    # Extract (param_value -> freq_ghz) for the requested mode index.
+    mode_data: Dict[float, float] = {}
+    for row in rows:
+        try:
+            p_val = float(row[param_name])
+            m_num = int(float(row.get("mode", 1)))
+            freq = float(row["freq_ghz"])
+        except (KeyError, ValueError):
+            continue
+        if m_num == mode_index and not math.isnan(freq):
+            mode_data[p_val] = freq
+
+    if len(mode_data) < 3:
+        return {**result, "ok": False,
+                "error": (f"Only {len(mode_data)} data point(s) for mode "
+                          f"{mode_index}; need >= 3 for a degree-{poly_degree} "
+                          f"fit. Widen freq_start/freq_stop or increase "
+                          f"n_sweep_points."),
+                "calibration_csv": csv_out, "raw_rows": len(rows)}
+
+    p_sorted = sorted(mode_data)
+    f_sorted = [mode_data[p] for p in p_sorted]
+
+    # Optional transmon post-physics: convert f0 -> fge.
+    if post_physics == "transmon":
+        from .circuit_physics import compute_circuit_params
+        y_sorted = []
+        for f_ghz in f_sorted:
+            params = compute_circuit_params(L_H=lumped_inductance_H,
+                                            f0_Hz=f_ghz * 1e9)
+            fge = params.get("fq_Hz")
+            y_sorted.append(fge / 1e9 if fge is not None else f_ghz)
+        y_label = "fge_ghz"
+    else:
+        y_sorted = f_sorted
+        y_label = "eigenfreq_ghz"
+
+    from .circuit_physics import polynomial_inverse
+    roots = polynomial_inverse(p_sorted, y_sorted, target_value, degree=poly_degree)
+    if not roots:
+        return {**result, "ok": False,
+                "error": (f"No root found for {y_label} = {target_value} GHz in "
+                          f"{param_name} in [{param_range[0]}, {param_range[1]}] "
+                          f"{param_unit}. Observed range: [{min(y_sorted):.4f}, "
+                          f"{max(y_sorted):.4f}] GHz. Widen param_range or check "
+                          f"mode_index."),
+                "calibration_csv": csv_out,
+                "sweep_data": {param_name: p_sorted, y_label: y_sorted}}
+
+    recommended = roots[0]  # first (and usually unique) root in range
+    import numpy as _np
+    coeffs = _np.polyfit(p_sorted, y_sorted, poly_degree)
+    y_at_rec = float(_np.polyval(coeffs, recommended))
+    residual = abs(y_at_rec - target_value)
+
+    return {
+        **result,
+        "recommended_value": round(recommended, 4),
+        "param_name": param_name,
+        "param_unit": param_unit,
+        f"expected_{y_label}": round(y_at_rec, 6),
+        "target_ghz": target_value,
+        "residual_ghz": round(residual, 6),
+        "all_roots": [round(r, 4) for r in roots],
+        "calibration_csv": csv_out,
+        "sweep_data": {param_name: p_sorted, y_label: y_sorted},
+        "note": (f"Set {param_name} = {round(recommended, 4)} [{param_unit}] "
+                 f"to achieve {y_label} ~ {round(y_at_rec, 4)} GHz "
+                 f"(target {target_value} GHz, "
+                 f"residual {round(residual * 1000, 2)} MHz)."),
+    }
+
+
+def _start_solve(
+    registry: JobRegistry,
+    job: Job,
     argv: List[str],
-    log_path: Path,
     out: Path,
     debug: bool,
     timeout_s: float,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Run argv and collect output files, surfacing MPH paths separately."""
-    res = run_command(argv, log_path=log_path, cwd=out,
-                      timeout_s=timeout_s, debug=debug)
-    all_files = sorted(set(
-        str(p) for pat in ["*.mph", "*.csv", "*.dat", "*.s2p"]
-        for p in out.rglob(pat)
-    ))
-    mph_paths = [f for f in all_files if f.endswith(".mph")]
-    ok = res.ok
-    return {
-        "ok": ok,
-        "output_files": all_files,
-        "mph_paths": mph_paths,
-        "returncode": res.returncode,
-        "duration_s": round(res.duration_s, 2),
-        "summary": f"finished rc={res.returncode}; {len(mph_paths)} MPH file(s) saved",
-        "error": None if ok else "process failed (see run.log)",
-    }
+    """Start a prepared solve in a detached worker; collect the usual artifacts.
+
+    Detached rather than threaded: this server is spawned per MCP client and a
+    daemon thread dies with it, taking a multi-hour solve's result with it. The
+    script patching that precedes this call is cheap and touches no solver, so
+    it stays in the caller — only the solve is detached. See
+    :mod:`comsol_suite.job_runner`.
+    """
+    out.mkdir(parents=True, exist_ok=True)
+    kwargs.setdefault("post", f"{__name__}:post_surface_mph")
+    registry.start_detached(
+        job, argv, cwd=out, timeout_s=timeout_s, debug=debug,
+        collect_dir=out, collect_patterns=SOLVE_ARTIFACT_PATTERNS, **kwargs)
+    return {"job_id": job.job_id, "status": job.status}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -444,33 +570,30 @@ def run_stub_length_sweep(
         )
         return result
 
-    def worker(job: Job) -> Dict[str, Any]:
-        out.mkdir(parents=True, exist_ok=True)
-        patched = patch_script(
-            src,
-            Path(job.run_dir) / "_sweep_patched.py",
-            {
-                r"^ROOT\s*=.*$": f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
-                r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
-                r"^OUT_DIR\s*=.*$": f'OUT_DIR = r"{out.as_posix()}"',
-                r"^CSV_OUT\s*=.*$": f'CSV_OUT = r"{csv_out.as_posix()}"',
-            },
-        )
-        real_argv = (
-            [cfg.python_bin, str(patched),
-             "--cores", str(comsol_cores),
-             "--stubs"] + [str(int(s)) for s in stub_lengths_um] +
-            ["--freqs"] + [str(f) for f in freq_ghz] +
-            ["--out", str(csv_out)]
-        )
-        if port != "both":
-            real_argv += ["--port", port]
-        if resume:
-            real_argv.append("--resume")
-        return _run_and_collect(real_argv, Path(job.log_path), out, debug, 21600)
-
-    job = registry.submit("run_stub_length_sweep", worker, background=True)
-    return {"job_id": job.job_id, "status": job.status}
+    job = registry.reserve("run_stub_length_sweep")
+    out.mkdir(parents=True, exist_ok=True)
+    patched = patch_script(
+        src,
+        Path(job.run_dir) / "_sweep_patched.py",
+        {
+            r"^ROOT\s*=.*$": f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+            r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+            r"^OUT_DIR\s*=.*$": f'OUT_DIR = r"{out.as_posix()}"',
+            r"^CSV_OUT\s*=.*$": f'CSV_OUT = r"{csv_out.as_posix()}"',
+        },
+    )
+    real_argv = (
+        [cfg.python_bin, str(patched),
+         "--cores", str(comsol_cores),
+         "--stubs"] + [str(int(s)) for s in stub_lengths_um] +
+        ["--freqs"] + [str(f) for f in freq_ghz] +
+        ["--out", str(csv_out)]
+    )
+    if port != "both":
+        real_argv += ["--port", port]
+    if resume:
+        real_argv.append("--resume")
+    return _start_solve(registry, job, real_argv, out, debug, 21600)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -586,46 +709,43 @@ def run_eigenfrequency_study(
         return _preflight("run_eigenfrequency_study", argv, patches_plan,
                           comsol_host, cfg.comsol_port, mph_plan)
 
-    def worker(job: Job) -> Dict[str, Any]:
-        out.mkdir(parents=True, exist_ok=True)
-        patch_dict: Dict[str, str] = {
-            r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
-            r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
-            r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
-            r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
-        }
-        if extract_fields and path_selections:
-            patch_dict[r"^PATH_SELECTIONS\s*=.*$"] = (
-                f'PATH_SELECTIONS = {repr(list(path_selections))}'
-            )
-        if extract_fields and node_groups:
-            patch_dict[r"^NODE_GROUPS\s*=.*$"] = (
-                f'NODE_GROUPS = {repr(list(node_groups))}'
-            )
-        patched = patch_script(
-            src, Path(job.run_dir) / "_eigenfreq_patched.py",
-            patch_dict, require_all=False,
+    job = registry.reserve("run_eigenfrequency_study")
+    out.mkdir(parents=True, exist_ok=True)
+    patch_dict: Dict[str, str] = {
+        r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+        r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+        r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+        r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+    }
+    if extract_fields and path_selections:
+        patch_dict[r"^PATH_SELECTIONS\s*=.*$"] = (
+            f'PATH_SELECTIONS = {repr(list(path_selections))}'
         )
-        real_argv = [
-            cfg.python_bin, str(patched),
-            "--modes", str(n_modes),
-            "--freq-start", str(freq_start_ghz),
-            "--freq-stop", str(freq_stop_ghz),
-            "--out", str(csv_out),
-            "--cores", str(comsol_cores),
-        ]
-        if extract_fields:
-            real_argv.append("--extract-fields")
-            if path_selections:
-                real_argv += ["--path-selections"] + list(path_selections)
-            if node_groups:
-                real_argv += ["--node-groups"] + list(node_groups)
-        if debug:
-            real_argv.append("--debug")
-        return _run_and_collect(real_argv, Path(job.log_path), out, debug, 3600)
-
-    job = registry.submit("run_eigenfrequency_study", worker, background=True)
-    return {"job_id": job.job_id, "status": job.status}
+    if extract_fields and node_groups:
+        patch_dict[r"^NODE_GROUPS\s*=.*$"] = (
+            f'NODE_GROUPS = {repr(list(node_groups))}'
+        )
+    patched = patch_script(
+        src, Path(job.run_dir) / "_eigenfreq_patched.py",
+        patch_dict, require_all=False,
+    )
+    real_argv = [
+        cfg.python_bin, str(patched),
+        "--modes", str(n_modes),
+        "--freq-start", str(freq_start_ghz),
+        "--freq-stop", str(freq_stop_ghz),
+        "--out", str(csv_out),
+        "--cores", str(comsol_cores),
+    ]
+    if extract_fields:
+        real_argv.append("--extract-fields")
+        if path_selections:
+            real_argv += ["--path-selections"] + list(path_selections)
+        if node_groups:
+            real_argv += ["--node-groups"] + list(node_groups)
+    if debug:
+        real_argv.append("--debug")
+    return _start_solve(registry, job, real_argv, out, debug, 3600)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -763,29 +883,26 @@ def run_custom_comsol_build(
         return _preflight("run_custom_comsol_build", argv, patches_plan,
                           comsol_host, cfg.comsol_port, mph_plan)
 
-    def worker(job: Job) -> Dict[str, Any]:
-        out.mkdir(parents=True, exist_ok=True)
-        patched = patch_script(
-            src,
-            Path(job.run_dir) / f"_{src.stem}_patched.py",
-            {
-                rf"^{re.escape(out_dir_var)}\s*=.*$": (
-                    f'{out_dir_var} = r"{out.as_posix()}"'
-                ),
-                rf"^{re.escape(param_overrides_var)}\s*=.*$": (
-                    f'{param_overrides_var} = {repr(geom_params or {})}'
-                ),
-                rf"^{re.escape(material_overrides_var)}\s*=.*$": (
-                    f'{material_overrides_var} = {repr(material_params or {})}'
-                ),
-            },
-            require_all=False,  # scripts may define only some of these vars
-        )
-        real_argv = [cfg.python_bin, str(patched), "--cores", str(comsol_cores)]
-        return _run_and_collect(real_argv, Path(job.log_path), out, debug, 14400)
-
-    job = registry.submit("run_custom_comsol_build", worker, background=True)
-    return {"job_id": job.job_id, "status": job.status}
+    job = registry.reserve("run_custom_comsol_build")
+    out.mkdir(parents=True, exist_ok=True)
+    patched = patch_script(
+        src,
+        Path(job.run_dir) / f"_{src.stem}_patched.py",
+        {
+            rf"^{re.escape(out_dir_var)}\s*=.*$": (
+                f'{out_dir_var} = r"{out.as_posix()}"'
+            ),
+            rf"^{re.escape(param_overrides_var)}\s*=.*$": (
+                f'{param_overrides_var} = {repr(geom_params or {})}'
+            ),
+            rf"^{re.escape(material_overrides_var)}\s*=.*$": (
+                f'{material_overrides_var} = {repr(material_params or {})}'
+            ),
+        },
+        require_all=False,  # scripts may define only some of these vars
+    )
+    real_argv = [cfg.python_bin, str(patched), "--cores", str(comsol_cores)]
+    return _start_solve(registry, job, real_argv, out, debug, 14400)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -884,31 +1001,20 @@ def validate_geometry(
         return _preflight("validate_geometry", argv, patches_plan,
                           comsol_host, cfg.comsol_port, [])
 
-    def worker(job: Job) -> Dict[str, Any]:
-        out.mkdir(parents=True, exist_ok=True)
-        if mph_path_var is not None:
-            patched = patch_script(
-                src, Path(job.run_dir) / f"_{src.stem}_patched.py",
-                patches_plan, require_all=False,
-            )
-            real_argv = [cfg.python_bin, str(patched)] + extra
-        else:
-            real_argv = [cfg.python_bin, str(src), mph_path] + extra
-        res = run_command(real_argv, log_path=Path(job.log_path), cwd=out,
-                          timeout_s=1800, debug=debug)
-        reports = sorted(str(p) for p in out.rglob("*.json"))
-        return {
-            "ok": res.ok,
-            "passed": res.returncode == 0,
-            "returncode": res.returncode,
-            "checker_script": str(src),
-            "report": reports,
-            "log_tail": res.log_tail(30),
-            "error": None if res.ok else f"validate_geometry failed (see run.log)",
-        }
-
-    job = registry.submit("validate_geometry", worker, background=True)
-    return {"job_id": job.job_id, "status": job.status}
+    job = registry.reserve("validate_geometry")
+    out.mkdir(parents=True, exist_ok=True)
+    if mph_path_var is not None:
+        patched = patch_script(
+            src, Path(job.run_dir) / f"_{src.stem}_patched.py",
+            patches_plan, require_all=False,
+        )
+        real_argv = [cfg.python_bin, str(patched)] + extra
+    else:
+        real_argv = [cfg.python_bin, str(src), mph_path] + extra
+    return _start_solve(
+        registry, job, real_argv, out, debug, 1800,
+        post=f"{__name__}:post_validate_geometry",
+        post_kwargs={"out_dir": str(out), "checker_script": str(src)})
 
 
 def run_coupling_extraction(
@@ -1179,24 +1285,21 @@ def run_geometry_param_sweep(
         return _preflight("run_geometry_param_sweep", argv, patches_plan,
                           comsol_host, cfg.comsol_port, mph_plan)
 
-    def worker(job: Job) -> Dict[str, Any]:
-        out.mkdir(parents=True, exist_ok=True)
-        patched = patch_script(
-            src, Path(job.run_dir) / "_geom_sweep_patched.py",
-            {
-                r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
-                r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
-                r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
-                r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
-            },
-        )
-        return _run_and_collect(
-            [cfg.python_bin, str(patched)] + argv[2:],  # reuse argv after script
-            Path(job.log_path), out, debug, 21600,
-        )
-
-    job = registry.submit("run_geometry_param_sweep", worker, background=True)
-    return {"job_id": job.job_id, "status": job.status}
+    job = registry.reserve("run_geometry_param_sweep")
+    out.mkdir(parents=True, exist_ok=True)
+    patched = patch_script(
+        src, Path(job.run_dir) / "_geom_sweep_patched.py",
+        {
+            r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+            r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+            r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+            r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+        },
+    )
+    return _start_solve(
+        registry, job,
+        [cfg.python_bin, str(patched)] + argv[2:],  # reuse argv after script
+        out, debug, 21600)
 
 
 def run_decay_rate_sweep(
@@ -1302,24 +1405,20 @@ def run_decay_rate_sweep(
         return _preflight("run_decay_rate_sweep", argv, patches_plan,
                           comsol_host, cfg.comsol_port, mph_plan)
 
-    def worker(job: Job) -> Dict[str, Any]:
-        out.mkdir(parents=True, exist_ok=True)
-        patched = patch_script(
-            src, Path(job.run_dir) / "_decay_sweep_patched.py",
-            {
-                r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
-                r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
-                r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
-                r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
-            },
-        )
-        return _run_and_collect(
-            [cfg.python_bin, str(patched)] + argv[2:],
-            Path(job.log_path), out, debug, 14400,
-        )
-
-    job = registry.submit("run_decay_rate_sweep", worker, background=True)
-    return {"job_id": job.job_id, "status": job.status}
+    job = registry.reserve("run_decay_rate_sweep")
+    out.mkdir(parents=True, exist_ok=True)
+    patched = patch_script(
+        src, Path(job.run_dir) / "_decay_sweep_patched.py",
+        {
+            r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+            r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+            r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+            r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+        },
+    )
+    return _start_solve(
+        registry, job, [cfg.python_bin, str(patched)] + argv[2:],
+        out, debug, 14400)
 
 
 def run_parameter_inversion(
@@ -1468,131 +1567,37 @@ def run_parameter_inversion(
         }
         return plan
 
-    # ── Real-run worker ───────────────────────────────────────────────────────
-    def worker(job: Job) -> Dict[str, Any]:
-        import csv as _csv
-        import math
-
-        out.mkdir(parents=True, exist_ok=True)
-        patched = patch_script(
-            src,
-            Path(job.run_dir) / "_inversion_sweep_patched.py",
-            {
-                r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
-                r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
-                r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
-                r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
-            },
-        )
-        res = run_command(
-            [cfg.python_bin, str(patched)] + list(argv)[2:],
-            log_path=Path(job.log_path),
-            cwd=out,
-            timeout_s=21600,
-            debug=debug,
-        )
-        if not res.ok:
-            return {
-                "ok": False,
-                "error": f"Geometry sweep failed (rc={res.returncode}); see run.log",
-                "returncode": res.returncode,
-            }
-        if not csv_out.is_file():
-            return {"ok": False, "error": f"Sweep CSV not produced: {csv_out}"}
-
-        with open(csv_out, newline="") as fh:
-            rows = list(_csv.DictReader(fh))
-        if not rows:
-            return {"ok": False, "error": "Sweep CSV is empty"}
-
-        # Extract (param_value → freq_ghz) for the requested mode index.
-        mode_data: Dict[float, float] = {}
-        for row in rows:
-            try:
-                p_val = float(row[param_name])
-                m_num = int(float(row.get("mode", 1)))
-                freq  = float(row["freq_ghz"])
-            except (KeyError, ValueError):
-                continue
-            if m_num == mode_index and not math.isnan(freq):
-                mode_data[p_val] = freq
-
-        if len(mode_data) < 3:
-            return {
-                "ok": False,
-                "error": (
-                    f"Only {len(mode_data)} data point(s) for mode {mode_index}; "
-                    f"need ≥ 3 for a degree-{poly_degree} fit. "
-                    f"Widen freq_start/freq_stop or increase n_sweep_points."
-                ),
-                "calibration_csv": str(csv_out),
-                "raw_rows": len(rows),
-            }
-
-        p_sorted = sorted(mode_data)
-        f_sorted = [mode_data[p] for p in p_sorted]
-
-        # Optional transmon post-physics: convert f0 → fge.
-        if post_physics == "transmon":
-            from .circuit_physics import compute_circuit_params
-            y_sorted = []
-            for f_ghz in f_sorted:
-                params = compute_circuit_params(
-                    L_H=lumped_inductance_H, f0_Hz=f_ghz * 1e9
-                )
-                fge = params.get("fq_Hz")
-                y_sorted.append(fge / 1e9 if fge is not None else f_ghz)
-            y_label = "fge_ghz"
-        else:
-            y_sorted = f_sorted
-            y_label = "eigenfreq_ghz"
-
-        # Polynomial inversion.
-        from .circuit_physics import polynomial_inverse
-        roots = polynomial_inverse(p_sorted, y_sorted, target_value, degree=poly_degree)
-
-        if not roots:
-            return {
-                "ok": False,
-                "error": (
-                    f"No root found for {y_label} = {target_value} GHz in "
-                    f"{param_name} ∈ [{param_range[0]}, {param_range[1]}] {param_unit}. "
-                    f"Observed range: [{min(y_sorted):.4f}, {max(y_sorted):.4f}] GHz. "
-                    f"Widen param_range or check mode_index."
-                ),
-                "calibration_csv": str(csv_out),
-                "sweep_data": {param_name: p_sorted, y_label: y_sorted},
-            }
-
-        recommended = roots[0]  # first (and usually unique) root in range
-
-        # Evaluate poly at recommended to report expected output.
-        import numpy as _np
-        coeffs   = _np.polyfit(p_sorted, y_sorted, poly_degree)
-        y_at_rec = float(_np.polyval(coeffs, recommended))
-        residual = abs(y_at_rec - target_value)
-
-        return {
-            "ok": True,
-            "recommended_value": round(recommended, 4),
+    # ── Real run ──────────────────────────────────────────────────────────────
+    job = registry.reserve("run_parameter_inversion")
+    out.mkdir(parents=True, exist_ok=True)
+    patched = patch_script(
+        src,
+        Path(job.run_dir) / "_inversion_sweep_patched.py",
+        {
+            r"^ROOT\s*=.*$":     f'ROOT = r"{cfg.chip_sim_root.as_posix()}"',
+            r"^BASE_MPH\s*=.*$": f'BASE_MPH = r"{mph_path}"',
+            r"^OUT_DIR\s*=.*$":  f'OUT_DIR = r"{out.as_posix()}"',
+            r"^CSV_OUT\s*=.*$":  f'CSV_OUT = r"{csv_out.as_posix()}"',
+        },
+    )
+    # The inversion itself runs in the worker, next to the CSV the sweep writes
+    # (see post_parameter_inversion): a six-hour sweep must not lose its answer
+    # because the client that asked for it went away.
+    return _start_solve(
+        registry, job, [cfg.python_bin, str(patched)] + list(argv)[2:],
+        out, debug, 21600,
+        post=f"{__name__}:post_parameter_inversion",
+        post_kwargs={
+            "csv_out": str(csv_out),
             "param_name": param_name,
             "param_unit": param_unit,
-            f"expected_{y_label}": round(y_at_rec, 6),
-            "target_ghz": target_value,
-            "residual_ghz": round(residual, 6),
-            "all_roots": [round(r, 4) for r in roots],
-            "calibration_csv": str(csv_out),
-            "sweep_data": {param_name: p_sorted, y_label: y_sorted},
-            "note": (
-                f"Set {param_name} = {round(recommended, 4)} [{param_unit}] "
-                f"to achieve {y_label} ≈ {round(y_at_rec, 4)} GHz "
-                f"(target {target_value} GHz, "
-                f"residual {round(residual * 1000, 2)} MHz)."
-            ),
-        }
-
-    job = registry.submit("run_parameter_inversion", worker, background=True)
-    return {"job_id": job.job_id, "status": job.status}
+            "param_range": list(param_range),
+            "mode_index": mode_index,
+            "poly_degree": poly_degree,
+            "target_value": target_value,
+            "post_physics": post_physics,
+            "lumped_inductance_H": lumped_inductance_H,
+        })
 
 
 def export_touchstone(

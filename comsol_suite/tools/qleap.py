@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config import load_config
-from ..jobs import Job, JobRegistry
+from ..jobs import JobRegistry
 from ..runner import run_command
 
 LETTERS = "ABCD"
@@ -97,25 +97,16 @@ def _preflight(tool: str, argv: List[str], outputs: List[str]) -> Dict[str, Any]
 
 def _launch(registry: JobRegistry, tool: str, argv: List[str], cwd: Path,
             collect_dir: Path, timeout_s: float, debug: bool) -> Dict[str, Any]:
-    """Submit argv as a background job; collect CSV/JSON/PNG outputs."""
+    """Run argv in a DETACHED worker; collect CSV/JSON/PNG outputs.
 
-    def worker(job: Job) -> Dict[str, Any]:
-        res = run_command(argv, log_path=Path(job.log_path), cwd=cwd,
-                          timeout_s=timeout_s, debug=debug)
-        files: List[str] = []
-        for pat in ("*.csv", "*.json", "*.png"):
-            files.extend(str(p) for p in collect_dir.rglob(pat))
-        return {
-            "ok": res.ok,
-            "returncode": res.returncode,
-            "duration_s": round(res.duration_s, 2),
-            "output_files": sorted(set(files)),
-            "log_tail": res.log_tail(25),
-            "summary": f"{tool} finished rc={res.returncode}",
-            "error": None if res.ok else f"{tool} failed (see run.log)",
-        }
-
-    job = registry.submit(tool, worker, background=True)
+    Detached, not threaded: this server is spawned per MCP client and a daemon
+    thread dies with it, which lost real solves mid-run. See
+    :mod:`comsol_suite.job_runner`.
+    """
+    job = registry.submit_detached(
+        tool, argv, cwd=cwd, timeout_s=timeout_s, debug=debug,
+        collect_dir=collect_dir, collect_patterns=("*.csv", "*.json", "*.png"),
+        log_tail_lines=25)
     return {"job_id": job.job_id, "status": job.status}
 
 
