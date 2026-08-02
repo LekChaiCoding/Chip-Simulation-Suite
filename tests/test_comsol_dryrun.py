@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from comsol_suite.jobs import JobRegistry
 from comsol_suite.tools import comsol
+from conftest import requires
 
 
 def test_health_check_runs_without_comsol():
@@ -19,6 +20,7 @@ def test_health_check_runs_without_comsol():
     assert "detail" in out
 
 
+@requires("comsol_build")
 def test_build_dry_run_reports_plan(tmp_path):
     reg = JobRegistry(tmp_path / "runs")
     out = comsol.build_comsol_model(reg, gds_path="dummy.gds", dry_run=True)
@@ -29,6 +31,7 @@ def test_build_dry_run_reports_plan(tmp_path):
     assert "comsol_health" in out
 
 
+@requires("comsol_build")
 def test_build_dry_run_includes_geom_and_material_params(tmp_path):
     reg = JobRegistry(tmp_path / "runs")
     out = comsol.build_comsol_model(
@@ -53,6 +56,7 @@ def test_build_dry_run_includes_geom_and_material_params(tmp_path):
     assert not any("model_solved.mph" in p for p in mph)
 
 
+@requires("comsol_build")
 def test_build_dry_run_shows_mph_save_plan(tmp_path):
     reg = JobRegistry(tmp_path / "runs")
     out = comsol.build_comsol_model(reg, gds_path="dummy.gds", dry_run=True)
@@ -61,6 +65,7 @@ def test_build_dry_run_shows_mph_save_plan(tmp_path):
     assert all(p.endswith(".mph") for p in out["mph_files_would_save"])
 
 
+@requires("comsol_sweep")
 def test_sweep_dry_run_reports_plan(tmp_path):
     reg = JobRegistry(tmp_path / "runs")
     out = comsol.run_stub_length_sweep(
@@ -76,6 +81,7 @@ def test_sweep_dry_run_reports_plan(tmp_path):
     assert any("300" in p and ".mph" in p for p in mph)
 
 
+@requires("comsol_sweep")
 def test_sweep_dry_run_with_port_and_resume(tmp_path):
     reg = JobRegistry(tmp_path / "runs")
     out = comsol.run_stub_length_sweep(
@@ -87,6 +93,7 @@ def test_sweep_dry_run_with_port_and_resume(tmp_path):
     assert "--resume" in argv_str
 
 
+@requires("comsol_build")
 def test_custom_comsol_build_dry_run(tmp_path):
     """run_custom_comsol_build dry-run shows patch plan even for a fake script."""
     import comsol_suite.config as cfg_mod

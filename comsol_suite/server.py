@@ -1028,8 +1028,29 @@ def describe_config() -> Dict[str, Any]:
     """Show the resolved paths / COMSOL host / interpreters for this machine.
 
     Useful first call to confirm the suite found the pipeline scripts and data.
+    Also reports `missing_assets`: configured scripts and data files that do NOT
+    exist on this machine. Any tool wrapping one of those cannot work here and
+    will fail with "not found" — check this before choosing a tool, rather than
+    inferring it from a subprocess error.
     """
-    return load_config().as_dict()
+    cfg = load_config()
+    described = cfg.as_dict()
+    result = described.get("result", described)
+    missing = {}
+    for group in ("scripts", "data"):
+        for key, path in (result.get(group) or {}).items():
+            if not Path(path).exists():
+                missing[key] = path
+    result["missing_assets"] = missing
+    result["missing_assets_note"] = (
+        "" if not missing else
+        f"{len(missing)} configured asset(s) are absent from this checkout — "
+        f"the vendored 'COMSOL Simulation' / 'JosephsonCircuit' reference trees "
+        f"are not present here. Tools wrapping them (generate_cad, verify_cad, "
+        f"run_custom_cad, build_comsol_model, run_stub_length_sweep, "
+        f"export_touchstone, the abcd/julia fits) will fail with 'not found'. "
+        f"Nothing on the F0-F3 qubit line depends on them.")
+    return described
 
 
 # ─────────────────────────────────────────────────────────────────────────────

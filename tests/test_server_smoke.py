@@ -8,15 +8,31 @@ def test_package_imports():
     assert comsol_suite.__version__
 
 
-def test_config_resolves_paths():
+def test_config_resolves_paths_under_the_repo():
+    """Every configured path resolves under the repo root.
+
+    Resolution is what this suite owns; EXISTENCE of the legacy JTWPA trees
+    (``resources/COMSOL Simulation/``, ``resources/JosephsonCircuit/``) is a
+    property of the checkout, and they are not vendored here. Asserting they
+    exist made this fail permanently on a machine where nothing was wrong —
+    see tests/conftest.py. ``describe_config`` reports which are absent.
+    """
     from comsol_suite.config import load_config
     cfg = load_config()
-    # The wrapped source scripts and data should resolve to real files when the
-    # suite sits inside the Chip Simulation tree.
-    assert cfg.script("cad_generator").is_file()
-    assert cfg.script("abcd_fit").is_file()
-    assert cfg.datum("reference_gds").is_file()
-    assert cfg.datum("bridge003_sweep").is_file()
+    root = cfg.repo_root.resolve()
+    for key in ("cad_generator", "abcd_fit", "comsol_build", "comsol_eigenfreq"):
+        assert cfg.script(key).resolve().is_relative_to(root), key
+    for key in ("reference_gds", "bridge003_sweep"):
+        assert cfg.datum(key).resolve().is_relative_to(root), key
+
+
+def test_the_suites_own_scripts_are_present():
+    """The scripts this repo DOES vendor must be there — a real regression if not."""
+    from comsol_suite.config import load_config
+    cfg = load_config()
+    for key in ("comsol_eigenfreq", "comsol_eigenfreq_fields",
+                "comsol_geometry_sweep", "comsol_decay_sweep"):
+        assert cfg.script(key).is_file(), f"{key} -> {cfg.script(key)}"
 
 
 def test_tools_register_on_server():
@@ -75,6 +91,10 @@ def test_tools_register_on_server():
         "qleap_chipconstruction_verify_block",
         "qleap_chipconstruction_build_hexlattice",
         "qleap_chipconstruction_status",
+        # F0-F3 factory control plane (added 2026-07-27; this set was not
+        # updated with them, so the suite reported three real tools as
+        # "unexpected" on every run)
+        "qleap_factory_status", "qleap_factory_line", "qleap_factory_record",
     }
     missing = expected - names
     assert not missing, f"tools not registered: {missing}"

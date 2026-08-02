@@ -21,6 +21,7 @@ from comsol_suite.config import load_config
 from comsol_suite.jobs import JobRegistry
 from comsol_suite.tools import comsol
 from comsol_suite.tools.cad import run_custom_cad
+from conftest import requires
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,6 +249,7 @@ def _suite_script(rel_path):
     return str(cfg.chip_sim_root / "COMSOL Simulation Suite" / rel_path)
 
 
+@requires("comsol_build")
 def test_custom_build_resonator_dry_run_patches_correctly(tmp_path):
     """Dry-run for build_resonator_halfwave.py succeeds and shows the patch plan."""
     build_script = _suite_script("scripts/build_resonator_halfwave.py")
@@ -268,6 +270,7 @@ def test_custom_build_resonator_dry_run_patches_correctly(tmp_path):
         f"sub_eps_r not in patch plan: {patches}"
 
 
+@requires("comsol_build")
 def test_custom_build_d0_dry_run_patches_correctly(tmp_path):
     """Dry-run for build_D0_capext.py succeeds and shows the patch plan."""
     build_script = _suite_script("scripts/build_D0_capext.py")
@@ -303,6 +306,7 @@ def test_custom_build_script_not_found(tmp_path):
 # Resonator CAD generation
 # ─────────────────────────────────────────────────────────────────────────────
 
+@requires("cad_generator")
 def test_resonator_cad_produces_gds(tmp_path):
     """cad_resonator_halfwave.py generates a valid GDS via run_custom_cad."""
     cad_script = _suite_script("scripts/cad_resonator_halfwave.py")
@@ -323,6 +327,7 @@ def test_resonator_cad_produces_gds(tmp_path):
     assert size_bytes > 500, f"GDS suspiciously small: {size_bytes} bytes"
 
 
+@requires("cad_generator")
 def test_resonator_cad_has_expected_layers(tmp_path):
     """Generated resonator GDS must contain layer 0 (metal), 1 (gap), 2 (ports)."""
     import gdstk
@@ -345,6 +350,7 @@ def test_resonator_cad_has_expected_layers(tmp_path):
     assert 2 in layers_used, f"Layer 2 (ports) missing: layers={layers_used}"
 
 
+@requires("cad_generator")
 def test_resonator_cad_has_two_port_markers(tmp_path):
     """Resonator GDS must have exactly 2 port marker rectangles on layer 2."""
     import gdstk

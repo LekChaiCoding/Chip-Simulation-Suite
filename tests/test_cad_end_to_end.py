@@ -11,8 +11,10 @@ import pytest
 
 from comsol_suite.config import load_config
 from comsol_suite.tools.cad import generate_cad, run_custom_cad, verify_cad
+from conftest import requires
 
 
+@requires("cad_generator", "cad_verifier")
 def test_generate_then_verify(tmp_path):
     gen = generate_cad(output_dir=str(tmp_path), debug=True)
     assert gen["ok"], f"generate_cad failed: {gen.get('log_tail')}"
@@ -23,12 +25,14 @@ def test_generate_then_verify(tmp_path):
     assert ver["n_failures"] == 0
 
 
+@requires("cad_verifier", data=("reference_gds",))
 def test_reference_gds_passes_checker():
     # The committed reference GDS must itself pass the geometry checker.
     ver = verify_cad(debug=True)
     assert ver["passed"], ver.get("report")
 
 
+@requires("cad_generator", "cad_verifier")
 def test_run_custom_cad_produces_gds(tmp_path):
     """run_custom_cad can drive converter_group_recreation.py as a custom script.
 

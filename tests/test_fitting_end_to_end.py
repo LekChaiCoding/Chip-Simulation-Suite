@@ -14,6 +14,7 @@ import csv
 from comsol_suite.config import load_config
 from comsol_suite.jobs import JobRegistry
 from comsol_suite.tools.fitting import run_abcd_fit, run_abcd_fit_parallel, run_generic_fit
+from conftest import requires
 
 
 def _check_abcd_csv(csv_path: str) -> None:
@@ -37,6 +38,7 @@ def _check_abcd_csv(csv_path: str) -> None:
         )
 
 
+@requires("abcd_fit", data=("bridge003_sweep",))
 def test_abcd_fit_produces_sane_results(tmp_path):
     """Sequential ABCD fit: all stubs in one subprocess."""
     cfg = load_config()
@@ -54,6 +56,7 @@ def test_abcd_fit_produces_sane_results(tmp_path):
     _check_abcd_csv(results_csv[0])
 
 
+@requires("abcd_fit", data=("bridge003_sweep",))
 def test_abcd_fit_single_stub(tmp_path):
     """run_abcd_fit with stub_filter_um processes exactly one stub."""
     registry = JobRegistry(tmp_path / "runs")
@@ -75,6 +78,7 @@ def test_abcd_fit_single_stub(tmp_path):
     assert stubs_seen == {300.0}, f"unexpected stubs in filtered run: {stubs_seen}"
 
 
+@requires("abcd_fit", data=("bridge003_sweep",))
 def test_abcd_fit_parallel_produces_sane_merged_results(tmp_path):
     """Parallel ABCD fit: N concurrent subprocesses, merged CSV."""
     registry = JobRegistry(tmp_path / "runs")
@@ -107,6 +111,7 @@ def test_abcd_fit_parallel_produces_sane_merged_results(tmp_path):
     assert len(stubs_seen) == 6, f"not all stubs in merged CSV: {stubs_seen}"
 
 
+@requires("abcd_fit", data=("bridge003_sweep",))
 def test_run_generic_fit_runs_abcd_script(tmp_path):
     """run_generic_fit can drive the existing abcd_fit.py as a custom script."""
     cfg = load_config()
