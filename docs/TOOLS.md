@@ -51,7 +51,7 @@ a checker for any device, or use `None` for the project default (JTWPA).
 - **`gds_var`:** name of the GDS path constant in the checker script
   (default `"RECR"` — the JTWPA checker's constant). Override for other devices.
 - **`gds_path`:** override the GDS to validate. Defaults to the project reference GDS.
-- **Returns:** `{passed, gds_path, n_failures, report, checker_script}`
+- **Returns:** `{passed, ran, error_kind, returncode, gds_path, checker_script, n_failures, report, error}` — the verdict is THREE-valued. `passed` is `null`, not `false`, when the check could not run at all; `ran` and `error_kind` (`gds_missing` / `checker_missing` / `checker_interface` / `checker_raised`) say which. A null verdict means "I could not look", never "the mask is bad" — do not report it as a geometry failure.
 
 Copy `scripts/checker_template.py` as a starting point for any device checker.
 

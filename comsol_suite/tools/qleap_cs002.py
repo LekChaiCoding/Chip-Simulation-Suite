@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from ..config import load_config
 from ..jobs import JobRegistry
-from ..runner import run_command
+from ..runner import new_log_path, run_command, update_last_log_pointer
 
 TILES = ("U0_R0", "U0_R1", "U1_R0", "U1_R1", "U2_R0", "U2_R1")
 LETTERS = "ABCD"
@@ -139,14 +139,23 @@ def _run_sync(tool: str, argv: List[str], cwd: Path, timeout_s: float = 300,
               debug: bool = False) -> Dict[str, Any]:
     """Run a pure-offline campaign script to completion synchronously
     (no COMSOL, no JobRegistry — :mod:`qleap_chipconstruction`'s
-    ``_run_sync`` precedent)."""
-    log_path = cwd / "logs" / f"{tool}_last.log"
+    ``_run_sync`` precedent).
+
+    One log per invocation, not one per tool: the fixed ``logs/<tool>_last.log``
+    this used to pass was opened ``"w"``, so two concurrent corrections
+    truncated each other's only record — and ``log_tail`` below is the only
+    thing the caller ever sees of the run. ``<tool>_last.log`` survives as a
+    copy for humans who know the name.
+    """
+    log_path = new_log_path(cwd / "logs", tool)
     res = run_command(argv, log_path=log_path, cwd=cwd,
                       timeout_s=timeout_s, debug=debug)
+    update_last_log_pointer(log_path, tool)
     return {
         "ok": res.ok,
         "returncode": res.returncode,
         "duration_s": round(res.duration_s, 2),
+        "log_path": str(log_path),
         "log_tail": res.log_tail(60),
     }
 

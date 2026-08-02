@@ -23,11 +23,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import load_config
 from ..jobs import JobRegistry
-from ..runner import run_command
+from ..runner import (extract_trailing_json, new_log_path, run_command,
+                      update_last_log_pointer)
 
 TILES = ("U0_R0", "U0_R1", "U1_R0", "U1_R1", "U2_R0", "U2_R1")
 
@@ -108,36 +109,52 @@ def _launch(registry: JobRegistry, tool: str, argv: List[str], cwd: Path,
     return {"job_id": job.job_id, "status": job.status}
 
 
+#: How much of the log the gate-report parse is allowed to look at. Generous:
+#: ``block_checker.py``'s report alone runs to dozens of lines.
+_PARSE_TAIL_LINES = 200
+
+
 def _run_sync(tool: str, argv: List[str], timeout_s: float = 300,
              debug: bool = False) -> Dict[str, Any]:
     """Run a pure gdstk/numpy ChipConstruction script to completion
     synchronously (no COMSOL, no JobRegistry — matches ``assemble_geometry``/
     ``verify_cad``'s "no COMSOL connection required, runs synchronously"
-    precedent in :mod:`cad`)."""
-    log_path = _chipcon_dir() / "logs" / f"{tool}_last.log"
+    precedent in :mod:`cad`).
+
+    The log goes to a path unique to this invocation (see
+    :func:`comsol_suite.runner.new_log_path`); ``logs/<tool>_last.log`` is kept
+    as a copy for humans only. It used to BE the log, one fixed name per tool,
+    which meant two concurrent calls to the same tool truncated each other's
+    only record — and since the verdict below is read back out of that file,
+    one call could return the other's gate report as its own.
+    """
+    log_path = new_log_path(_chipcon_dir() / "logs", tool)
     res = run_command(argv, log_path=log_path, cwd=_chipcon_dir(),
                       timeout_s=timeout_s, debug=debug)
+    update_last_log_pointer(log_path, tool)
+    parsed, parse_error = _extract_trailing_json(res.log_tail(_PARSE_TAIL_LINES))
     return {
         "ok": res.ok,
         "returncode": res.returncode,
         "duration_s": round(res.duration_s, 2),
+        "log_path": str(log_path),
         "log_tail": res.log_tail(60),
-        "parsed": _extract_trailing_json(res.log_tail(200)),
+        "parsed": parsed,
+        # Never a bare ``None`` with no account of itself: these docstrings
+        # promise the caller a {pass, problems} gate report, and a silent null
+        # is how a verdict gets lost instead of read.
+        "parse_error": parse_error,
     }
 
 
-def _extract_trailing_json(text: str) -> Optional[Any]:
-    """Best-effort parse of a trailing pretty-printed JSON object these
-    scripts print (e.g. ``block_checker.py``'s ``{pass, problems, ...}``).
-    Returns ``None`` if no parseable JSON tail is found — callers should
-    fall back to ``log_tail`` rather than assume this succeeds."""
-    idx = text.find("{")
-    while idx != -1:
-        try:
-            return json.loads(text[idx:])
-        except json.JSONDecodeError:
-            idx = text.find("{", idx + 1)
-    return None
+def _extract_trailing_json(text: str) -> Tuple[Optional[Any], Optional[str]]:
+    """This module's tail budget, applied to the suite's shared parser.
+
+    The parse itself is :func:`comsol_suite.runner.extract_trailing_json` — it
+    moved there once ``qleap_factory`` turned out to be running an older, buggy
+    copy of the same idea. Only the "how much did you look at" number is local.
+    """
+    return extract_trailing_json(text, tail_lines=_PARSE_TAIL_LINES)
 
 
 def _uv_argv(script: str, extras: List[str], args: List[str]) -> List[str]:

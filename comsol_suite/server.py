@@ -121,7 +121,20 @@ def verify_cad(
       Defaults to the project reference GDS.
 
     Copy ``scripts/checker_template.py`` to write a checker for any device.
-    ``passed=true`` means ``main()`` returned 0.
+
+    **The verdict is three-valued, not boolean.** ``passed`` is ``true`` when
+    ``main()`` returned 0, ``false`` when it returned non-zero, and ``null``
+    when the check never ran at all — no such GDS, no such checker script, a
+    checker missing the ``gds_var`` constant, or a checker that raised. Read
+    ``ran`` (``true``/``false``) to tell those apart, ``error_kind`` for which
+    one it was (``gds_missing`` / ``checker_missing`` / ``checker_interface`` /
+    ``checker_raised``), ``returncode`` for the checker's own exit code and
+    ``error`` for the message. ``passed=null`` means "I could not look", NOT
+    "the mask is bad" — do not report it as a geometry failure, and do not
+    re-cut geometry over it; fix the path or the checker and call again. Every
+    key is present on every path (``{passed, ran, error_kind, returncode,
+    gds_path, checker_script, n_failures, report, error}``), ``null`` where
+    this outcome cannot know it.
     """
     if gds_path is not None:
         ensure_contained(gds_path, arg="gds_path", tool="verify_cad")

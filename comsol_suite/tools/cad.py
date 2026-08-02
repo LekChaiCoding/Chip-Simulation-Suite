@@ -164,6 +164,36 @@ def _load_checker_module(checker_path: Path, module_name: str = "cad_checker"):
     return module
 
 
+#: Every key :func:`verify_cad` documents, so both outcomes have ONE shape.
+_VERDICT_KEYS = ("passed", "ran", "error_kind", "returncode", "gds_path",
+                 "checker_script", "n_failures", "report", "error")
+
+
+def _could_not_check(kind: str, message: str, **known: Any) -> Dict[str, Any]:
+    """The check did not happen. That is not the same as the check failing.
+
+    ``passed`` is ``None``, never ``False``: a missing checker script and a
+    geometry violation used to come back as the same ``{"passed": false}``, so
+    a broken install read as a bad mask — you re-cut geometry that was fine, or
+    you "fix" the report by pointing at a different GDS. ``ran`` and
+    ``error_kind`` say which of the two happened, and ``returncode`` is None
+    because no checker ever exited. Callers that branch on truthiness still
+    fail closed; callers that want the distinction can now have it.
+
+    All nine documented keys are present on every path, filled with ``None``
+    for the ones this outcome genuinely does not know. A caller reading
+    ``out["n_failures"]`` after a run that never resolved a checker script used
+    to get a ``KeyError`` instead of an answer — which is the same failure the
+    tri-state exists to remove, just relocated: "the tool blew up" is not a
+    geometry verdict either. ``None`` for a count is deliberately not ``0``;
+    zero failures is something only a checker that ran can report.
+    """
+    verdict: Dict[str, Any] = {key: None for key in _VERDICT_KEYS}
+    verdict.update(ran=False, error_kind=kind, error=message)
+    verdict.update(known)
+    return verdict
+
+
 def verify_cad(
     gds_path: Optional[str] = None,
     checker_script: Optional[str] = None,
@@ -208,14 +238,26 @@ def verify_cad(
     Returns
     -------
     dict
-        ``{passed, gds_path, n_failures, report}``.
+        ``{passed, ran, error_kind, returncode, gds_path, checker_script,
+        n_failures, report, error}`` — all nine keys on every path, so the
+        shape never depends on the outcome. Keys this outcome cannot know are
+        ``None``.
+
+        ``passed`` is ``True``/``False`` **only when the check actually ran**
+        (``ran=True``). When the check could not be run at all — no GDS, no
+        checker script, a checker that does not fit the interface, a checker
+        that raised — ``passed`` is ``None``, ``ran`` is ``False`` and
+        ``error_kind`` names which of those it was. "I could not look" is not
+        a geometry verdict, and reporting it as ``passed=False`` sent people
+        looking for a mask defect that was never there.
     """
     cfg = load_config()
 
     # Resolve GDS target.
     target = Path(gds_path) if gds_path else cfg.datum("reference_gds")
     if not target.is_file():
-        return {"passed": False, "error": f"GDS not found: {target}"}
+        return _could_not_check("gds_missing", f"GDS not found: {target}",
+                                gds_path=str(target))
 
     # Resolve checker script.
     checker_path = (
@@ -225,36 +267,56 @@ def verify_cad(
     try:
         checker = _load_checker_module(checker_path)
     except (FileNotFoundError, ImportError) as exc:
-        return {"passed": False, "error": str(exc)}
+        return _could_not_check("checker_missing", str(exc),
+                                gds_path=str(target),
+                                checker_script=str(checker_path))
 
     # Override the checker's GDS path constant and capture its printed report.
     if not hasattr(checker, gds_var):
-        return {
-            "passed": False,
-            "error": (
-                f"checker script '{checker_path.name}' does not define "
-                f"'{gds_var}'. Pass the correct gds_var name."
-            ),
-        }
+        return _could_not_check(
+            "checker_interface",
+            (f"checker script '{checker_path.name}' does not define "
+             f"'{gds_var}'. Pass the correct gds_var name."),
+            gds_path=str(target), checker_script=str(checker_path))
     setattr(checker, gds_var, str(target))
 
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
             rc = checker.main()
-    except Exception as exc:  # pragma: no cover - upstream check error
-        return {"passed": False, "gds_path": str(target),
-                "error": f"checker raised: {type(exc).__name__}: {exc}",
-                "report": buf.getvalue()}
+    except Exception as exc:
+        # The checker started and then blew up, so it never reached a verdict.
+        #
+        # This one is a judgement call, unlike the three above, and it is worth
+        # being plain about: a checker can raise BECAUSE the mask is bad —
+        # gdstk choking on a corrupt GDS is a real way to land here — so
+        # ``ran=False`` is not a claim that the geometry is fine. It is the
+        # claim that nobody looked at the geometry and reached a verdict, which
+        # is all that is true. Reporting it as ``passed=False`` would assert a
+        # geometry defect the checker never actually named, and the two cases
+        # are indistinguishable from out here; ``error`` carries the exception
+        # and ``report`` whatever the checker printed before it died, which is
+        # what tells a human which of the two they have.
+        return _could_not_check(
+            "checker_raised",
+            f"checker raised: {type(exc).__name__}: {exc}",
+            gds_path=str(target), checker_script=str(checker_path),
+            report=buf.getvalue())
 
     report = buf.getvalue()
     n_failures = report.count("[FAIL]")
     return {
         "passed": rc == 0,
+        "ran": True,
+        "error_kind": None,
+        # The checker's own exit code, which used to be thrown away entirely —
+        # a checker with several failure classes encodes them here.
+        "returncode": rc,
         "gds_path": str(target),
         "checker_script": str(checker_path),
         "n_failures": n_failures,
         "report": report if (debug or rc != 0) else (report.splitlines() or [""])[-1],
+        "error": None if rc == 0 else f"geometry check failed ({n_failures} [FAIL])",
     }
 
 

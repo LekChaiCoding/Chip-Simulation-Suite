@@ -13,7 +13,14 @@ Three responsibilities live here:
 
 2. :func:`run_command` — a single hardened wrapper around
    :class:`subprocess.Popen` that streams combined stdout/stderr to a log file,
-   enforces a timeout, and never uses a shell string (args list only).
+   enforces a timeout (against the child's whole process group, because the
+   direct child is usually only ``uv`` — see :func:`kill_process_tree`), and
+   never uses a shell string (args list only). :func:`new_log_path` names a log
+   that belongs to one invocation, so two concurrent calls to the same tool
+   cannot overwrite each other's only record, and prunes that tool's older run
+   logs so per-invocation naming does not turn into an unbounded pile.
+   :func:`extract_trailing_json` is the shared way a synchronous wrapper reads
+   a machine-readable verdict back out of such a log.
 
 3. The **timings ledger** (:func:`_append_timing` and its derivation helpers) —
    one appended JSONL line per completed run recording how long it took.
@@ -32,15 +39,19 @@ honest to show.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -361,8 +372,292 @@ def _append_timing(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Per-invocation log paths
+# ─────────────────────────────────────────────────────────────────────────────
+#: Human-facing "newest run of this tool" copy kept beside the real logs.
+_LAST_SUFFIX = "_last.log"
+
+#: How many run logs to keep per tool per directory. Per-invocation naming
+#: trades "two calls clobber each other" for "the directory grows forever", and
+#: only the second half of that trade is optional. Deep enough that a 24-letter
+#: fleet rollout can still be read back afterwards, shallow enough that the
+#: directory stays listable on the SMB share.
+_LOG_RETENTION_PER_TOOL = 32
+
+
+def _run_log_pattern(tool: str) -> re.Pattern[str]:
+    """Matches ONLY the names :func:`new_log_path` mints for ``tool``.
+
+    Anchored on the full stamp/pid/hex shape rather than a ``<tool>_*.log``
+    glob, because the retention sweep deletes what this matches and the log
+    directories are shared with files nobody here created:
+    ``simulations/ChipConstruction/logs/`` holds git-TRACKED ``.out``/``.err``
+    transcripts from the mask campaigns (29 of them today), plus the
+    ``<tool>_last.log`` copy this module maintains. None of those can match
+    this, so the sweep cannot reach them however the tool is named.
+    """
+    return re.compile(rf"^{re.escape(tool)}_\d{{8}}T\d{{6}}Z_\d+_[0-9a-f]{{6}}\.log$")
+
+
+def _prune_run_logs(log_dir: Path, tool: str,
+                    keep: int = _LOG_RETENTION_PER_TOOL) -> int:
+    """Delete all but the ``keep`` newest run logs for ``tool``. Best effort.
+
+    Newest by mtime, with the filename as the tie-break. Every failure mode
+    here (a racing sweep in another server process that unlinked the same file
+    first, a read-only mount, an SMB hiccup) is silently ignored — a log that
+    could not be tidied away is not a reason to fail the run it belongs to, and
+    the next call sweeps again anyway.
+    """
+    pattern = _run_log_pattern(tool)
+    try:
+        candidates = [p for p in log_dir.iterdir()
+                      if p.is_file() and pattern.match(p.name)]
+    except OSError:
+        return 0  # directory not created yet, or unlistable: nothing to prune
+    if len(candidates) <= keep:
+        return 0
+
+    def _age_key(path: Path) -> Any:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:  # vanished under a concurrent sweep: sort it first
+            mtime = 0.0
+        # Name breaks mtime ties so the sort is total and a sweep is
+        # reproducible. It does NOT break them chronologically: the stamp
+        # leading the name is second-resolution, and what follows it is pid
+        # then random hex, so two logs minted in the same second order by pid,
+        # which is arbitrary. Fine for retention — one of two same-second logs
+        # is as good a victim as the other — but do not read this ordering as
+        # "oldest first" below one-second granularity.
+        return (mtime, path.name)
+
+    candidates.sort(key=_age_key)
+    removed = 0
+    for stale in candidates[:len(candidates) - keep]:
+        try:
+            stale.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def new_log_path(log_dir: Path, tool: str) -> Path:
+    """A log path that belongs to THIS invocation and no other.
+
+    The synchronous wrappers used to hand ``run_command`` one fixed path per
+    tool (``logs/<tool>_last.log``), opened with mode ``"w"``. Two concurrent
+    calls to the same tool therefore shared their only result channel: the
+    second call truncated the first's log out from under it, and because these
+    wrappers read their verdict back OUT of that file, the first call could
+    return the second call's gate report as its own. Nothing else in the repo
+    reads the fixed name (grepped: only the three ``_run_sync``-style helpers
+    wrote it), so uniqueness costs nothing but a filename.
+
+    UTC stamp for human ordering, pid + random suffix for actual uniqueness —
+    the stamp alone collides when a fast tool is called twice in one second,
+    and pid alone collides across the several MCP server processes (one per
+    client) that share this tree.
+
+    **Run logs stay beside the campaign they document** (``<campaign>/logs/``),
+    which is where a human already looks and where the ``.out``/``.err``
+    transcripts of previous campaigns live. That is only safe because they are
+    version-control noise by rule, not by luck: the qleap repo's ``.gitignore``
+    carries a bare ``*.log``, so ``git check-ignore`` answers rc=0 for every
+    name minted here (checked for ``simulations/ChipConstruction/logs/`` and
+    ``simulations/_factory/logs/``) and none of them can surface in the
+    ``git status`` the push discipline reads. Keep that true if these ever move:
+    a run log that is not ignored is a run log somebody has to explain before
+    every push. What version control will NOT do is bound them, so this call
+    also SWEEPS: see :func:`_prune_run_logs`, which is deliberately blind to
+    anything it did not name itself.
+    """
+    _prune_run_logs(log_dir, tool)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return log_dir / f"{tool}_{stamp}_{os.getpid()}_{uuid.uuid4().hex[:6]}.log"
+
+
+def update_last_log_pointer(log_path: Path, tool: str) -> Optional[Path]:
+    """Refresh ``<tool>_last.log`` to be a copy of ``log_path``. Best effort.
+
+    Purely a convenience for a human tailing a known filename — the returned
+    result carries the real ``log_path``, and no code reads this copy. Written
+    to a temp name and renamed so that two runs finishing together leave one
+    intact log rather than two interleaved halves. Never raises: losing the
+    convenience copy must not fail a run that actually completed.
+
+    The staging name carries a uuid for the same reason :func:`new_log_path`
+    does, and it is not optional here. The concurrency this function exists to
+    survive is two calls to ONE tool inside ONE server process — same pid — so
+    a pid-only staging name is the same name twice: both copies truncate and
+    write it at overlapping offsets, ``os.replace`` moves whatever mixture
+    exists at that instant, and the loser raises ``FileNotFoundError`` on a
+    path the winner already renamed away. Measured, before the uuid: a 40 MB
+    and a 4 MB log left a 40000001-byte ``<tool>_last.log`` holding 4 MB of one
+    followed by 36 MB of the other.
+    """
+    target = log_path.parent / f"{tool}{_LAST_SUFFIX}"
+    tmp = (log_path.parent /
+           f".{tool}{_LAST_SUFFIX}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        shutil.copyfile(log_path, tmp)  # streamed: a solve log can be large
+        os.replace(tmp, target)
+        return target
+    except OSError as error:
+        print(f"[runner] WARNING: could not update {tool}{_LAST_SUFFIX}: "
+              f"{type(error).__name__}: {error}", file=sys.stderr)
+        return None
+    finally:
+        # A half-written staging file must not outlive the attempt. Unlike the
+        # run logs it is not a ``*.log``, so nothing ignores it and it WOULD
+        # show up untracked in ``git status``.
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reading a verdict back out of a log
+# ─────────────────────────────────────────────────────────────────────────────
+def extract_trailing_json(
+    text: str, *, tail_lines: Optional[int] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Parse the LAST complete top-level JSON value in ``text``.
+
+    Returns ``(value, None)`` on success and ``(None, reason)`` when there is
+    nothing parseable — the caller surfaces the reason so a missing verdict
+    reads as "could not parse", not as "no verdict".
+
+    The scan is forward, using :meth:`json.JSONDecoder.raw_decode` at each
+    candidate ``{``/``[``: a decode that succeeds consumes the whole value, so
+    the walk steps OVER nested braces and only ever records top-level objects,
+    and trailing prose after the report no longer poisons it. Last-wins because
+    the scripts that print several reports chain sub-steps, and the chain's
+    verdict is the one at the end.
+
+    It lives here, next to :func:`new_log_path`, because every synchronous
+    wrapper in the suite gets its verdict the same way — the tool prints JSON,
+    ``run_command`` captures it to a file, the wrapper parses the tail. Two
+    copies of that parse existed and only one of them was ever fixed; the
+    unfixed copy (``qleap_factory``) went on json.loads-ing from the FIRST
+    ``{`` to end-of-text, so a script that printed one more line after its
+    report parsed as "Extra data" and yielded a null verdict, and brace-bearing
+    prose earlier in the log made it guess again from the wrong offset.
+
+    ``tail_lines`` is only for the error text: it lets the message name how much
+    of the log was actually looked at, which is the first thing someone asks.
+    """
+    where = (f"the last {tail_lines} log lines" if tail_lines is not None
+             else "the log tail")
+    decoder = json.JSONDecoder()
+    found: Optional[Any] = None
+    saw_candidate = False
+    index = 0
+    while index < len(text):
+        start = min((p for p in (text.find("{", index), text.find("[", index))
+                     if p != -1), default=-1)
+        if start == -1:
+            break
+        saw_candidate = True
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except ValueError:
+            index = start + 1  # prose, a Python repr, a truncated head: skip it
+            continue
+        found = value  # keep walking; the LAST top-level value is the report
+        index = end
+    if found is not None:
+        return found, None
+    if not text.strip():
+        return None, "script produced no output to parse"
+    if saw_candidate:
+        return None, (f"no complete JSON object in {where} "
+                      f"(braces seen but none parsed) — see log_tail")
+    return None, f"no JSON object found in {where} — see log_tail"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Command execution
 # ─────────────────────────────────────────────────────────────────────────────
+#: POSIX gives us sessions and process groups; Windows gives us neither, so
+#: there the best available answer is still "kill the direct child".
+_POSIX = os.name == "posix"
+
+#: How long a timed-out tree gets to honour SIGTERM before SIGKILL. Long enough
+#: for a campaign script's ``finally`` to disconnect its COMSOL client (which is
+#: what actually returns the licence), short enough that a wall-clock timeout is
+#: still a wall-clock timeout.
+_TERM_GRACE_S = 5.0
+
+
+def kill_process_tree(proc: "subprocess.Popen[Any]", *,
+                      grace_s: float = _TERM_GRACE_S) -> str:
+    """Kill ``proc``'s whole process GROUP. Returns a one-line summary.
+
+    Not "everything it spawned", which is the stronger claim it is tempting to
+    make: a descendant that calls ``setsid``/``setpgrp`` leaves the group and
+    outlives this. Nothing ``run_command`` launches does — the COMSOL server is
+    an external prerequisite started by hand, not a child (see
+    ``qleap_chipconstruction.qleap_chipconstruction_mph_preflight``) — so the
+    group is the whole tree in practice, but only in practice.
+
+    Why the group and not ``proc.kill()``: every campaign tool is launched as
+    ``uv run --no-project ... python <script>.py``, so the direct child is
+    ``uv`` and the COMSOL-touching interpreter is a GRANDCHILD. Killing only
+    the direct child declared the job failed while the grandchild lived on
+    holding a COMSOL slot and a licence — the exact outcome
+    ``simulations/_framework/PLAYBOOK.md`` section 2 rules out ("wall-clock
+    timeouts kill the whole process group"). Slots are the scarce resource on
+    this host; a phantom holder blocks every later solve until someone notices.
+
+    SIGTERM first, so a script that traps it can close its COMSOL client and
+    release the licence deliberately; SIGKILL after the grace period for
+    whatever ignored it. The group gets the second signal even when the direct
+    child has already exited, because ``uv`` exiting says nothing at all about
+    the python running underneath it.
+    """
+    if not _POSIX:  # pragma: no cover - POSIX-only host
+        proc.kill()
+        proc.wait()
+        return f"pid {proc.pid} (no POSIX process groups on this platform)"
+
+    pgid: Optional[int] = None
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        pgid = None  # already reaped; only the direct-child signal is left
+    if pgid is not None and pgid == os.getpgrp():
+        # Refuse to signal our OWN group. If ``start_new_session`` ever stops
+        # taking effect, killpg here would take down the MCP server (or the
+        # detached job worker) together with the child it was policing.
+        pgid = None
+
+    def _send(sig: int) -> None:
+        if pgid is not None:
+            try:
+                os.killpg(pgid, sig)
+                return
+            except OSError:
+                pass  # group already gone — fall through to the child itself
+        try:
+            proc.send_signal(sig)
+        except OSError:  # ProcessLookupError and friends: it is already dead
+            pass
+
+    _send(signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        pass
+    _send(signal.SIGKILL)
+    proc.wait()
+    return (f"process group {pgid} (SIGTERM, then SIGKILL)" if pgid is not None
+            else f"pid {proc.pid} only (no separate process group)")
+
+
 def run_command(
     argv: Sequence[str],
     log_path: Path,
@@ -427,14 +722,53 @@ def run_command(
             stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
+            # Own session (POSIX) => own process group, so the timeout below
+            # can take the whole ``uv -> python -> COMSOL`` tree down as one
+            # unit. See :func:`kill_process_tree`. The child's inherited stdout
+            # is unaffected, so log streaming is exactly as before.
+            start_new_session=_POSIX,
         )
         try:
             proc.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             timed_out = True
-            proc.kill()
-            proc.wait()
-            log.write(f"\n[runner] TIMEOUT after {timeout_s}s — process killed\n")
+            killed = kill_process_tree(proc)
+            log.write(f"\n[runner] TIMEOUT after {timeout_s}s — killed {killed}\n")
+        except BaseException:
+            # Anything that UNWINDS this frame while a child is running:
+            # KeyboardInterrupt, SystemExit, a cancellation raised into this
+            # thread. ``start_new_session`` above put the child in its own
+            # session, so the terminal's SIGINT no longer reaches it and an
+            # interrupted run would otherwise leave the grandchild — and its
+            # COMSOL slot — behind. Tear it down, then let the exception
+            # continue on its way.
+            #
+            # It is NOT a teardown guarantee for the process being killed.
+            # Python's default SIGTERM disposition ends the interpreter without
+            # raising, and this package installs no ``signal.signal`` handler
+            # and no ``atexit`` hook, so a supervisor's ``kill -TERM`` runs none
+            # of this. Worse, the same ``start_new_session`` that makes the
+            # timeout able to kill the tree also takes the child OUT of the
+            # server's process group, so a group-directed teardown no longer
+            # reaches it either.
+            #
+            # So state the residual honestly rather than talk it away: if this
+            # process is SIGKILLed, or SIGTERMed with the default disposition,
+            # a COMSOL child started here is orphaned and keeps its licence
+            # until its own deadline. That is not hypothetical for long runs —
+            # ``jobs.job_runner`` calls this function for exactly those, so the
+            # "only short gdstk scripts come through here" reassurance an
+            # earlier version of this comment offered was simply untrue.
+            #
+            # What bounds the damage is the worker being a SEPARATE process
+            # (``jobs.submit_detached``), so killing the MCP server does not
+            # reach it at all, and every command carrying its own ``timeout_s``,
+            # after which the group is killed. Nobody has closed the
+            # kill -9-the-worker case, and a handler here could not:
+            # ``signal.signal`` only works on the main thread and this runs on
+            # job-worker threads.
+            kill_process_tree(proc)
+            raise
 
     result = CommandResult(
         returncode=proc.returncode,

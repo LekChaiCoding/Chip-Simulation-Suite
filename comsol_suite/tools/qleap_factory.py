@@ -25,10 +25,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from ..config import load_config
-from ..runner import run_command
+from ..runner import (extract_trailing_json, new_log_path, run_command,
+                      update_last_log_pointer)
 
 
 def _repo_root() -> Path:
@@ -54,27 +55,42 @@ def _uv_argv(script: Path, args: list[str]) -> list[str]:
     return ["uv", "run", "--no-project", "python", str(script), *args]
 
 
+#: How much of the log the parse below is allowed to look at. ``factory_status
+#: --json`` prints the whole record chain, which is far longer than a gate
+#: report, so this is generous where ``qleap_chipconstruction``'s is not.
+_PARSE_TAIL_LINES = 4000
+
+
 def _run_json(tool: str, argv: list[str], timeout_s: float = 180) -> Dict[str, Any]:
     """Run one of the offline control-plane CLIs and return its parsed JSON.
 
     These print a JSON document on stdout with ``--json``; `run_command` captures
     to a log, so parse the log tail rather than assuming a stdout pipe.
+
+    Both halves of that — the log name and the parse — used to be this module's
+    own older copies of what the rest of the suite fixed, and both were wrong in
+    ways a read-only status tool still feels. The fixed ``logs/<tool>_last.log``
+    was opened ``"w"``, so two clients asking for factory status at once read
+    each other's answer; the parse json.loads'd from the FIRST ``{`` to
+    end-of-text, so one trailing "wrote ..." line from the CLI turned the whole
+    record chain into ``parsed=null`` and the agent reported an uninitialised
+    factory. Both now come from :mod:`comsol_suite.runner`, which is the point
+    of that module.
     """
-    log_path = _factory_home() / "logs" / f"{tool}_last.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = new_log_path(_factory_home() / "logs", tool)
     res = run_command(argv, log_path=log_path, cwd=_repo_root(), timeout_s=timeout_s)
-    text = res.log_tail(4000)
-    parsed: Optional[Any] = None
-    idx = text.find("{")
-    while idx != -1 and parsed is None:
-        try:
-            parsed = json.loads(text[idx:])
-        except json.JSONDecodeError:
-            idx = text.find("{", idx + 1)
+    update_last_log_pointer(log_path, tool)
+    parsed, parse_error = extract_trailing_json(res.log_tail(_PARSE_TAIL_LINES),
+                                                tail_lines=_PARSE_TAIL_LINES)
     return {
         "ok": res.ok,
         "returncode": res.returncode,
+        "log_path": str(log_path),
         "parsed": parsed,
+        # A null verdict never arrives unexplained: these tools promise the
+        # caller a document, and "the factory has not been initialised" is
+        # exactly the wrong conclusion to let a model draw from silence.
+        "parse_error": parse_error,
         "log_tail": None if parsed is not None else res.log_tail(40),
     }
 
