@@ -1616,7 +1616,8 @@ def qleap_chipconstruction_verify_block(dry_run: bool = True,
 
 @mcp.tool()
 def qleap_chipconstruction_build_hexlattice(qubits: int, dry_run: bool = True,
-                                            debug: bool = False) -> Dict[str, Any]:
+                                            debug: bool = False,
+                                            out_dir: str | None = None) -> Dict[str, Any]:
     """P7: assemble + fully seam-align a direct nx_unit x ny_unit grid of
     the 6 unit-cell tiles (no "block" grouping, no vertical stagger).
     qubits must be a multiple of 4 whose qubits/4 is a perfect square
@@ -1624,9 +1625,15 @@ def qleap_chipconstruction_build_hexlattice(qubits: int, dry_run: bool = True,
     resources/qleap_qubit_layout/config/chip_types.json's own convention.
     Preview first with render_schematic.py's hexlattice view and get
     sign-off before calling this. Self-gates with gds_validity_checker.py;
-    writes OptimizedModels/hexlattice_{qubits}qubit.gds."""
+    writes OptimizedModels/hexlattice_{qubits}qubit.gds.
+
+    out_dir redirects the mask, its seams manifest and its gate reports
+    elsewhere INSIDE the campaign (writes outside it are refused). Use it to
+    REBUILD a mask for comparison without overwriting the sealed original: the
+    F3 record pins each mask by sha256, so an in-place rebuild makes every
+    later intake refuse on hash drift."""
     return qleap_chipconstruction.qleap_chipconstruction_build_hexlattice(
-        qubits=qubits, debug=debug, dry_run=dry_run)
+        qubits=qubits, debug=debug, dry_run=dry_run, out_dir=out_dir)
 
 
 @mcp.tool()

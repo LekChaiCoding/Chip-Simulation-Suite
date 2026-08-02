@@ -195,10 +195,18 @@ def qleap_chipconstruction_mph_preflight(
     argv = [*_uv_argv("check_mph_preflight.py", ["--with", "mph"],
                       ["--tile", tile, "--cores", str(cores)])]
     if dry_run:
-        return _preflight("qleap_chipconstruction_mph_preflight", argv, [])
-    return _launch(registry, "qleap_chipconstruction_mph_preflight", argv,
-                   cwd=_chipcon_dir(), collect_dir=_chipcon_dir() / "Data",
-                   timeout_s=300, debug=debug)
+        return _preflight_sync("qleap_chipconstruction_mph_preflight", argv, [])
+    # Foreground, NOT _launch. This server is spawned per MCP client and is
+    # short-lived, so a background job's daemon thread dies with the process:
+    # a real run launched this, got "running", and the next poll reported
+    # `interrupted: MCP server restarted mid-run` after 20 s with an empty
+    # run.log — the agent then looped hunting for output that was never
+    # produced. The preflight only loads a .mph and inspects it (its own cap is
+    # 300 s), so running it to completion inside the call returns a real result
+    # and leaves no orphan. `build_hexlattice` already takes this shape at
+    # 1800 s; this was the outlier.
+    return _run_sync("qleap_chipconstruction_mph_preflight", argv,
+                     timeout_s=300, debug=debug)
 
 
 def qleap_chipconstruction_export_tile(
@@ -478,7 +486,8 @@ def qleap_chipconstruction_build_chip(
 # ─────────────────────────────────────────────────────────────────────────────
 # P7 — generalized hex-lattice chip sizes (foreground, no COMSOL)
 # ─────────────────────────────────────────────────────────────────────────────
-def qleap_chipconstruction_build_hexlattice(qubits: int, dry_run: bool = True, debug: bool = False) -> Dict[str, Any]:
+def qleap_chipconstruction_build_hexlattice(qubits: int, dry_run: bool = True, debug: bool = False,
+                                            out_dir: Optional[str] = None) -> Dict[str, Any]:
     """P7: assemble + fully seam-align a direct ``nx_unit x ny_unit`` grid of
     the 6 unit-cell tiles (no "block" grouping, no vertical stagger -- a
     plain periodic grid tiles cleanly with no parity mismatch, unlike the
@@ -492,13 +501,25 @@ def qleap_chipconstruction_build_hexlattice(qubits: int, dry_run: bool = True, d
     practice as P0a/P0b. Self-gates with ``gds_validity_checker.py``;
     fails loudly if it doesn't pass. Writes
     ``OptimizedModels/hexlattice_{qubits}qubit.gds``.
+
+    ``out_dir`` redirects the mask, its seams manifest and its gate reports
+    elsewhere INSIDE the campaign (the script's own ``assert_write_allowed``
+    refuses anything outside it). Use it to REBUILD a mask for comparison
+    without overwriting the sealed original: the F3 record pins each mask by
+    sha256, so an in-place rebuild makes every later intake refuse on hash
+    drift. Omit it and the default output path is unchanged.
     """
-    argv = _uv_argv("build_hexlattice.py", ["--with", "gdstk"], ["--qubits", str(qubits)])
+    extra = ["--qubits", str(qubits)]
+    if out_dir:
+        extra += ["--out-dir", str(out_dir)]
+    argv = _uv_argv("build_hexlattice.py", ["--with", "gdstk"], extra)
+    written = (str(Path(out_dir) / f"hexlattice_{qubits}qubit.gds") if out_dir
+               else str(_chipcon_dir() / "OptimizedModels" / f"hexlattice_{qubits}qubit.gds"))
     if dry_run:
-        return _preflight_sync("qleap_chipconstruction_build_hexlattice", argv, [str(_chipcon_dir() / "OptimizedModels" / f"hexlattice_{qubits}qubit.gds")])
+        return _preflight_sync("qleap_chipconstruction_build_hexlattice", argv, [written])
     result = _run_sync("qleap_chipconstruction_build_hexlattice", argv,
                        timeout_s=1800, debug=debug)
-    result["output"] = str(_chipcon_dir() / "OptimizedModels" / f"hexlattice_{qubits}qubit.gds")
+    result["output"] = written
     return result
 
 

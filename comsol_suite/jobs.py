@@ -20,6 +20,7 @@ keep working across MCP-server restarts.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import traceback
@@ -77,9 +78,26 @@ class JobRegistry:
         return self._runs_dir / job_id / "job.json"
 
     def _persist(self, job: Job) -> None:
+        """Write job.json atomically: temp file in the same dir, then os.replace.
+
+        A plain ``write_text`` here produced a ZERO-BYTE job.json on the SMB share
+        this repo lives on, which then made the job unrecoverable in both
+        directions: ``get()`` could not find it, and ``_rehydrate`` skipped it
+        because empty text is not parseable JSON. That is the failure PLAYBOOK.md
+        section 3 already warns about ("always atomic_json; plain writes are
+        observed half-written by concurrent readers") — the job registry simply
+        was not following it. os.replace is atomic, so a reader sees either the
+        previous complete file or the new one, never a truncated one.
+        """
         path = self._job_json(job.job_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(job.to_public(), indent=2), encoding="utf-8")
+        tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+        try:
+            tmp.write_text(json.dumps(job.to_public(), indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def _rehydrate(self) -> None:
         """Load prior jobs from disk so history survives a server restart."""
@@ -161,8 +179,57 @@ class JobRegistry:
 
     # -- queries ---------------------------------------------------------------
     def get(self, job_id: str) -> Optional[Job]:
+        """Look the job up in memory, then fall back to its job.json on disk.
+
+        The disk fallback is what makes an async job pollable AT ALL here: this
+        server is spawned per MCP client, so a job launched by a station
+        subagent's server is simply absent from the orchestrator's in-memory
+        map, and ``_rehydrate`` only runs at construction — before that job
+        existed. Without this, an agent that launches a background job and then
+        asks after it gets "unknown job_id" for a job it just started, which is
+        exactly what happened to a real run: the model then looped, hunting the
+        filesystem for output that was being written under a job id it had been
+        told did not exist.
+        """
         with self._lock:
-            return self._jobs.get(job_id)
+            job = self._jobs.get(job_id)
+        if job is not None:
+            return job
+        loaded = self._load_from_disk(job_id)
+        if loaded is not None:
+            with self._lock:
+                # Re-check: a concurrent caller may have rehydrated it first, and
+                # that instance is the one any waiter already holds a reference to.
+                job = self._jobs.get(job_id)
+                if job is None:
+                    self._jobs[job_id] = loaded
+                    job = loaded
+        return job
+
+    def _load_from_disk(self, job_id: str) -> Optional[Job]:
+        """Read one job's persisted metadata, or None if it is absent/unreadable."""
+        # job_id becomes a path component, and it arrives from a tool argument —
+        # i.e. ultimately from a model. Anything with a separator or a parent
+        # reference is refused rather than resolved.
+        if (not job_id or job_id in (".", "..")
+                or "/" in job_id or "\\" in job_id or "\x00" in job_id):
+            return None
+        jf = self._job_json(job_id)
+        try:
+            data = json.loads(jf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or "job_id" not in data:
+            return None
+        # A job still marked 'running' on disk was launched by a process we
+        # cannot see. Report it verbatim rather than guessing it died: the
+        # writer updates this file on every state change, so a later poll gets
+        # the truth. `_rehydrate` rewrites 'running' to failed only at startup,
+        # where it really does mean "the server that owned it is gone".
+        return Job(**{k: data[k] for k in (
+            "job_id", "tool", "status", "created_at", "started_at",
+            "finished_at", "run_dir", "log_path", "result", "error")
+            if k in data})
 
     def list(self) -> List[Job]:
         with self._lock:
