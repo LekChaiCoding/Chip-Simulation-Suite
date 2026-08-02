@@ -78,6 +78,28 @@ def _letter(letter: str) -> str:
     return letter
 
 
+#: uv extras for any CS002 script that reaches ``optimize_qubit``.
+#:
+#: PLAYBOOK.md's launch line is ``--with mph --with numpy``, and every CS002 tool
+#: here copied it verbatim — but ``optimize_qubit`` parses the exported touchstone
+#: with scikit-rf and then draws the C-matrix figure, which pulls matplotlib and
+#: (via models/.../lib/spara_analysis.py) seaborn. So the COMSOL solve ran to
+#: completion and the capacitance was computed, and then the tool died on an
+#: import THREE times over, one package per attempt, discarding the result each
+#: time. ``direct_probe``, ``nm_from_x0`` and ``finalize_optimized_model`` all
+#: import optimize_qubit, so all three shared the fault.
+#:
+#: scikit-rf is pinned: 1.8.0 is the version this campaign's touchstone parsing
+#: was validated against.
+_OPTIMIZE_QUBIT_EXTRAS: List[str] = [
+    "--with", "mph",
+    "--with", "numpy",
+    "--with", "scikit-rf==1.8.0",
+    "--with", "matplotlib",
+    "--with", "seaborn",
+]
+
+
 def _uv_argv(script: Path, extras: List[str], args: List[str]) -> List[str]:
     """Repo-standard campaign launch: ``env -u VIRTUAL_ENV uv run
     --no-project [--with ...] python <script> <args>`` (PLAYBOOK.md)."""
@@ -241,7 +263,7 @@ def qleap_cs002_direct_probe(
 
     argv = _uv_argv(
         _cs002_dir() / "tools" / "direct_probe.py",
-        ["--with", "mph", "--with", "numpy"],
+        _OPTIMIZE_QUBIT_EXTRAS,
         ["--unit", tile, "--letter", letter, "--run-id", run_id,
          "--params-json", json.dumps(params)],
     )
@@ -349,7 +371,7 @@ def qleap_cs002_finalize(
         args += ["--allow-out-of-tolerance"]
 
     argv = _uv_argv(_cs002_dir() / "tools" / "finalize_optimized_model.py",
-                    ["--with", "mph", "--with", "numpy"], args)
+                    _OPTIMIZE_QUBIT_EXTRAS, args)
 
     optimized_dir = (_cs002_dir() / "Optimized Models" / tile
                      / f"{tile}_{letter}")
