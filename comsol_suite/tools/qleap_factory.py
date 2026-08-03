@@ -24,6 +24,7 @@ are also design-agnostic: the scope grammar comes from the active design in
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -51,8 +52,28 @@ def _factory_tools() -> Path:
     return _factory_home() / "tools"
 
 
-def _uv_argv(script: Path, args: list[str]) -> list[str]:
-    return ["uv", "run", "--no-project", "python", str(script), *args]
+def _cli_argv(script: Path, args: list[str]) -> list[str]:
+    """Run a control-plane CLI with THIS interpreter, not through ``uv run``.
+
+    Both callers here — ``factory_status.py`` and ``line_spec.py`` — need only an
+    interpreter: they import the standard library plus ``qleapsim``, which their
+    own ``_bootstrap`` puts on the path. That is why this function never passed a
+    single ``--with`` flag, unlike ``qleap_chipconstruction``'s namesake, which
+    genuinely needs ``gdstk``/``mph`` and must keep using uv.
+
+    So the ``uv run`` wrapper bought nothing and cost the tool its own timeout.
+    Measured on this SMB checkout 2026-08-04:
+
+        factory_status.py --json, this interpreter : 36.7 s
+        factory_status.py --json, via `uv run`     : >180 s -> KILLED
+
+    uv's environment resolution over SMB was adding 140+ seconds to a 37-second
+    script, so ``qleap_factory_status`` timed out on every call. Found by letting
+    Qwen drive the line: it asked for the line state, the tool was SIGKILLed at
+    the 180 s ceiling, and the agent had to work around its own primary status
+    tool by fetching each phase record individually.
+    """
+    return [sys.executable, str(script), *args]
 
 
 #: How much of the log the parse below is allowed to look at. ``factory_status
@@ -107,7 +128,7 @@ def qleap_factory_status() -> Dict[str, Any]:
     This is the tool to answer "is F3 sealed?", "what is accepted in F2?", "is
     anything stopping the line?" — do not try to infer it by listing directories.
     """
-    argv = _uv_argv(_factory_tools() / "factory_status.py", ["--json"])
+    argv = _cli_argv(_factory_tools() / "factory_status.py", ["--json"])
     return _run_json("qleap_factory_status", argv)
 
 
@@ -121,7 +142,7 @@ def qleap_factory_line() -> Dict[str, Any]:
     Use it to work out what comes next and what has to hold before it may start;
     ``unresolved`` lists any row the parser could not make sense of.
     """
-    argv = _uv_argv(_factory_tools() / "line_spec.py", ["--json"])
+    argv = _cli_argv(_factory_tools() / "line_spec.py", ["--json"])
     return _run_json("qleap_factory_line", argv)
 
 
