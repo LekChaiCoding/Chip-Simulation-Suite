@@ -95,6 +95,10 @@ def test_tools_register_on_server():
         # updated with them, so the suite reported three real tools as
         # "unexpected" on every run)
         "qleap_factory_status", "qleap_factory_line", "qleap_factory_record",
+        # The one that RUNS F2 rather than describing it (added 2026-08-04).
+        # Until it existed the agent could read the line's plan and its record
+        # chain but had no way to execute a station.
+        "qleap_f2_gauntlet",
     }
     missing = expected - names
     assert not missing, f"tools not registered: {missing}"

@@ -1722,6 +1722,35 @@ def qleap_factory_record(phase: str, scope: str) -> Dict[str, Any]:
     return qleap_factory.qleap_factory_record(phase=phase, scope=scope)
 
 
+@mcp.tool()
+def qleap_f2_gauntlet(tile: str, only: str | None = None,
+                      letters: str | None = None, dry_run: bool = True,
+                      solve: bool = False, force: bool = False) -> Dict[str, Any]:
+    """RUN F2's S2.1-S2.5 gauntlet for one unit-cell tile.
+
+    The station runner, not a raw campaign driver: it chains the steps, refuses to
+    certify an artifact older than its own input, applies each step's SPC gate and
+    writes a hash-chained report. Prefer it over calling ``qleap_run_eigen_gqr`` /
+    ``qleap_nt2_*`` / ``qleap_cct001_*`` by hand — those are the underlying
+    campaigns and carry none of that chaining or gating.
+
+    ``tile`` e.g. ``U0_R0``. ``only`` runs one step (``S2.1_eigen_gqr`` …
+    ``S2.5_merge_verify``). ``letters`` e.g. ``"AB"``, omit for all four.
+
+    ``dry_run`` DEFAULTS TO TRUE — plan only, touching nothing. Spending COMSOL
+    hours needs BOTH ``dry_run=false`` AND ``solve=true``, two explicit arguments
+    rather than one. ``force`` re-runs commands whose outputs already look
+    current; without it a completed step replays from disk.
+
+    A non-zero return with ``ok=false`` usually means a GATE REFUSED. That is the
+    tool working — read the verdicts for the failing quantity, and do not retry
+    without changing something.
+    """
+    return qleap_factory.qleap_f2_gauntlet(
+        tile=tile, only=only, letters=letters,
+        dry_run=dry_run, solve=solve, force=force)
+
+
 def main() -> None:
     """Console-script / ``python -m`` entry point: serve over stdio."""
     mcp.run()

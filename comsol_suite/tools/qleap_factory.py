@@ -15,10 +15,31 @@ That is a tool gap, not a model failure, and these three tools close it:
                            checkpoints) parsed from FACTORY.md's floor plan
     qleap_factory_record   one scope's full acceptance record
 
-All three are pure reads, so they carry no ``dry_run`` argument by design (see
+Those three are pure reads, so they carry no ``dry_run`` argument by design (see
 ``qleap_chipconstruction._preflight_sync`` for why mutating tools must). They
 are also design-agnostic: the scope grammar comes from the active design in
 ``simulations/_designs/``, never from a literal in here.
+
+    qleap_f2_gauntlet      RUN F2's S2.1-S2.5 for one tile
+
+That fourth one closes a bigger gap than the first three, found on 2026-08-04 by
+enumerating what the agent can actually reach. Of 67 MCP tools it had:
+
+  * ``qleap_factory_line`` to read what F2's stations are, and
+  * ``qleap_factory_status`` to read whether they are accepted,
+
+and **nothing that runs them**. The whole F2 gauntlet — the eigen g_QR solve, the
+frequency retune, the notch tune, the cable gamma walk, the merge-and-verify —
+was reachable only by a human typing ``run_gauntlet.py`` at a shell. So an agent
+asked to take a tile through F2 could describe the work in detail and then had no
+way to do it; the individual campaign tools it *does* hold
+(``qleap_run_eigen_gqr``, ``qleap_nt2_*``, ``qleap_cct001_*``) are the raw
+campaign drivers, which is precisely NOT the same thing as the gauntlet: they
+carry none of its chaining, staleness checks, SPC gates or report writing.
+
+That is a tool gap of the same species as the one this module was created for,
+and it is the thing standing between "Qwen can talk about the line" and "Qwen can
+drive the line".
 """
 
 from __future__ import annotations
@@ -223,3 +244,147 @@ def qleap_factory_record(phase: str, scope: str) -> Dict[str, Any]:
         return {"ok": True, "path": str(path), "record": json.loads(path.read_text())}
     except json.JSONDecodeError as exc:
         return {"ok": False, "error": f"record is not valid JSON: {exc}"}
+
+
+def _f2_tools() -> Path:
+    return _repo_root() / "simulations" / "F2_UnitCell001" / "tools"
+
+
+def _f2_vocabulary() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(tiles, step keys) read from F2's own module, never copied.
+
+    Imported rather than duplicated so a new step or a design with different
+    tiles cannot leave this tool advertising a stale vocabulary — the failure
+    species this repo keeps finding, where a declaration and the thing it
+    describes drift apart and nobody checks.
+
+    Via ``import_module`` rather than ``module_from_spec`` + ``exec_module``: the
+    latter leaves the module absent from ``sys.modules`` while its body runs, and
+    ``f2_commands`` defines dataclasses. ``@dataclass`` looks its own class's
+    module up in ``sys.modules`` to resolve annotations, finds ``None``, and dies
+    on ``AttributeError: 'NoneType' object has no attribute '__dict__'`` — an
+    error that names dataclasses and says nothing about the real cause. Measured
+    here on 2026-08-04.
+
+    The two names live in DIFFERENT modules, mirroring ``run_gauntlet``'s own
+    imports: ``STEPS`` in ``f2_commands``, ``TILES`` in ``f2_unitcell001lib``.
+    Reading both from ``f2_commands`` raised ``AttributeError`` — and an earlier
+    blanket ``except Exception`` here turned that into a silently empty
+    vocabulary, so every tile and step validated as fine. Hence the narrow
+    excepts: a missing checkout is tolerated, a wrong attribute is not.
+
+    Returns empty tuples if F2 is not in this checkout. An unknown vocabulary
+    must not stop the tool — it only means names go unvalidated here and the
+    runner's own argparse refuses them instead, one layer later.
+    """
+    import importlib
+
+    tools = str(_f2_tools())
+    added = tools not in sys.path
+    if added:
+        sys.path.insert(0, tools)
+    try:
+        steps = tuple(importlib.import_module("f2_commands").STEPS)
+        tiles = tuple(importlib.import_module("f2_unitcell001lib").TILES)
+        return tiles, steps
+    except (ImportError, ModuleNotFoundError):   # pragma: no cover - thin checkout
+        return (), ()
+    finally:
+        if added:
+            try:
+                sys.path.remove(tools)
+            except ValueError:               # pragma: no cover
+                pass
+
+
+#: A gauntlet solve is measured in hours, not minutes: S2.3's notch driver alone
+#: is given 12 h by its own Command spec. This is the ceiling for the whole run.
+_GAUNTLET_SOLVE_TIMEOUT_S = 20 * 3600
+
+
+def qleap_f2_gauntlet(tile: str, only: str | None = None, letters: str | None = None,
+                      dry_run: bool = True, solve: bool = False,
+                      force: bool = False) -> Dict[str, Any]:
+    """Run F2's S2.1-S2.5 gauntlet for one unit-cell tile.
+
+    This is the station runner, not a raw campaign driver: it chains the steps,
+    refuses to certify an artifact older than its own input, applies the SPC gate
+    for each step and writes a hash-chained report. Prefer it over calling
+    ``qleap_run_eigen_gqr`` / ``qleap_nt2_*`` / ``qleap_cct001_*`` by hand — those
+    are the underlying campaigns and carry none of that.
+
+    ``tile``    a unit cell, e.g. ``U0_R0``.
+    ``only``    one step key (``S2.1_eigen_gqr`` … ``S2.5_merge_verify``) to run
+                just that step; omit to run the whole gauntlet.
+    ``letters`` which qubits, e.g. ``"AB"``; omit for all four.
+    ``dry_run`` DEFAULT TRUE: plan only, touching nothing. Read the plan and
+                check the command list before spending COMSOL hours.
+    ``solve``   actually run the solves. Requires ``dry_run=False``, so the
+                expensive path needs two explicit arguments rather than one.
+    ``force``   re-run commands whose outputs already look current. Without it a
+                completed step REPLAYS from disk instead of re-deriving, which is
+                usually what you want and is always what the verdict's own
+                source path will tell you.
+
+    ``--rederive`` IS DELIBERATELY NOT EXPOSED. On a whole-chain run it discards
+    RCS002's solve-budget boundary, which is days of accepted work, and no agent
+    should be able to reach that through a tool call. A human runs it at a shell.
+
+    A non-zero ``returncode`` with ``ok=false`` usually means a gate REFUSED.
+    That is the tool working, not a malfunction: read the verdicts for the
+    quantity that failed, and do not retry without changing something.
+
+    ON THE RETURN SHAPE, stated plainly because it is a real limitation rather
+    than an oversight: ``run_gauntlet`` has no ``--json`` flag, so ``parsed`` is
+    ``null`` and the human-readable run log arrives in ``log_tail`` (with the
+    whole thing at ``log_path``). The STRUCTURED verdicts do exist — each step
+    writes ``<TILE>/Data/<step>_report_<ts>.json``, hash-chained through
+    ``gauntlet_chain.json``, and the log names the path it wrote. Read that file
+    for machine-checkable gate results; the log tail is for seeing what happened.
+    """
+    tiles, steps = _f2_vocabulary()
+
+    if tiles and tile not in tiles:
+        return {"ok": False,
+                "error": f"tile {tile!r} is not one of this design's tiles: "
+                         f"{list(tiles)}"}
+    if only is not None and steps and only not in steps:
+        return {"ok": False,
+                "error": f"step {only!r} is not an F2 step. Choose one of: "
+                         f"{list(steps)}"}
+    if letters is not None and not (letters.isalpha() and letters.isupper()):
+        return {"ok": False,
+                "error": f"letters {letters!r} should be upper-case qubit letters "
+                         f'like "AB" or "ABCD"'}
+    if solve and dry_run:
+        return {
+            "ok": False,
+            "error": "solve=true contradicts dry_run=true. To spend COMSOL hours "
+                     "pass BOTH dry_run=false AND solve=true; to see the plan, "
+                     "leave both at their defaults.",
+        }
+
+    script = _f2_tools() / "run_gauntlet.py"
+    if not script.is_file():
+        return {"ok": False, "error": f"no gauntlet runner at {_display(script)}"}
+
+    args = ["--tile", tile]
+    if only:
+        args += ["--only", only]
+    if letters:
+        args += ["--letters", letters]
+    if dry_run:
+        args.append("--dry-run")
+    if solve:
+        args.append("--solve")
+    if force:
+        args.append("--force")
+
+    # This interpreter, not `uv run`: the runner needs only the stdlib plus
+    # qleapsim (its own `_bootstrap` handles the path) and measures 0.73 s here,
+    # where uv's resolution over SMB adds 140+ s — the exact trap documented on
+    # `_cli_argv`. Each SOLVE command the runner spawns builds its own uv
+    # environment with the --with flags that command needs, so nothing is lost.
+    return _run_json(
+        "qleap_f2_gauntlet", _cli_argv(script, args),
+        timeout_s=_GAUNTLET_SOLVE_TIMEOUT_S if solve else 600)
