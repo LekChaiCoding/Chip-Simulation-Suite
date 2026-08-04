@@ -2,20 +2,20 @@
 
 All tools here are **device-agnostic** — they accept a script path or checker
 script rather than hardcoding any particular geometry.  The default fallbacks
-(no script supplied) retain backward compatibility with the original JTWPA
+(no script supplied) retain backward compatibility with the original vendored
 scripts.
 
 Four tools live here:
 
   * :func:`generate_cad` — run *any* GDS generation script with path
     redirection. When ``cad_script`` is omitted it falls back to the config
-    default (``cad_generator``, currently the JTWPA script).
+    default (``cad_generator``, currently a vendored script).
 
   * :func:`verify_cad` — run *any* geometry checker script in-process.
     The checker must define a module-level string constant (``gds_var``,
     default ``"RECR"``) that the tool overrides with the target GDS path,
     and a ``main() → int`` that returns 0 on pass.  When ``checker_script``
-    is omitted it falls back to the project's JTWPA checker for backward
+    is omitted it falls back to the project's vendored checker for backward
     compatibility.
 
   * :func:`run_custom_cad` — identical to :func:`generate_cad` but with an
@@ -64,13 +64,13 @@ def generate_cad(
 
     Device-agnostic: accepts any Python script that writes a GDS file.
     When ``cad_script`` is omitted the config default is used (backward
-    compatible with the original JTWPA workflow).
+    compatible with the original vendored workflow).
 
     Parameters
     ----------
     cad_script
         Absolute path to the GDS generation script.  When ``None`` the config
-        key ``cad_generator`` is used (falls back to the JTWPA script).
+        key ``cad_generator`` is used (falls back to the vendored script).
     out_gds_var
         Name of the module-level variable in the script that holds the output
         GDS path.  Defaults to ``OUT_GDS``.
@@ -205,7 +205,7 @@ def verify_cad(
     Device-agnostic: accepts any checker script that follows the interface
     (module-level GDS path constant + ``main() → int``).  When
     ``checker_script`` is omitted the config default ``cad_verifier`` is used
-    (backward compatible with the JTWPA workflow).
+    (backward compatible with the vendored workflow).
 
     Checker script interface
     ------------------------
@@ -227,10 +227,10 @@ def verify_cad(
         when omitted (backward compatible).
     checker_script
         Absolute path to a checker script.  When ``None`` the config key
-        ``cad_verifier`` is used (falls back to the JTWPA checker).
+        ``cad_verifier`` is used (falls back to the vendored checker).
     gds_var
         Name of the module-level string constant in the checker that holds
-        the GDS path.  Default ``"RECR"`` matches the JTWPA checker.
+        the GDS path.  Default ``"RECR"`` matches the vendored checker.
         Use ``"GDS_PATH"`` for scripts based on ``checker_template.py``.
     debug
         Include the full checker report in ``report`` regardless of pass/fail.

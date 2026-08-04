@@ -16,7 +16,7 @@ background work, so its parameter is hidden from the MCP-facing signatures.
 
 Pipeline overview (CAD → COMSOL → fitting)
 -------------------------------------------
-Standard 21-junction JTWPA workflow:
+Legacy vendored workflow (the wrapped 21-junction reference device):
 
     1. generate_cad()               → GDS + PNG preview
     2. verify_cad(gds_path)         → geometry pass/fail (user-facing; optional)
@@ -50,6 +50,10 @@ from .jobs import JobRegistry
 from .tools import (cad, comsol, fitting, circuit_physics, design_params,
                     qleap, qleap_nt2, qleap_cct001, qleap_cs002,
                     qleap_chipconstruction, qleap_factory)
+# One device family's vendored surface, kept in its own package so the import
+# path answers "does this tool generalise?" — see tools/jtwpa/__init__.py.
+from .tools.jtwpa import comsol as jtwpa_comsol
+from .tools.jtwpa import fitting as jtwpa_fitting
 
 # ── Shared singletons ────────────────────────────────────────────────────────
 CONFIG = load_config()
@@ -72,9 +76,9 @@ def generate_cad(
 ) -> Dict[str, Any]:
     """Generate a chip GDS layout from any GDS generation script.
 
-    Device-agnostic: works for JTWPA, transmon qubit, resonator, waveguide, or any
+    Device-agnostic: works for a transmon qubit, resonator, waveguide, amplifier, or any
     gdstk-based layout script. When ``cad_script`` is omitted, runs the project
-    default (config key: ``cad_generator``, currently the JTWPA script) for backward
+    default (config key: ``cad_generator``, currently a vendored script) for backward
     compatibility.
 
     - **cad_script**: absolute path to any Python GDS generation script.
@@ -109,13 +113,13 @@ def verify_cad(
 
     Device-agnostic: provide any Python checker that defines a ``main() -> int``
     and a module-level string constant. When ``checker_script`` is omitted,
-    runs the project default JTWPA checker (backward compatible).
+    runs the project default vendored checker (backward compatible).
 
     - **checker_script**: absolute path to any checker script.
       The script must define ``main() -> int`` (0 = pass) and a module-level
       string constant whose name matches ``gds_var``.
     - **gds_var**: name of the GDS path constant in the checker script
-      (default ``"RECR"`` — matches the JTWPA checker).
+      (default ``"RECR"`` — matches the vendored checker).
       Override to match your script, e.g. ``"GDS_PATH"``.
     - **gds_path**: override the GDS path that the checker validates.
       Defaults to the project reference GDS.
@@ -253,7 +257,7 @@ def build_comsol_model(
     dry_run: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
-    """Build the JTWPA COMSOL EM model from a GDS (build → coarse solve).
+    """Build the vendored reference COMSOL EM model from a GDS (build → coarse solve).
 
     Defaults to dry-run — shows the patch plan, COMSOL health, and where the
     ``.mph`` files would be saved. Set ``dry_run=False`` on the COMSOL network
@@ -284,11 +288,11 @@ def build_comsol_model(
     - **comsol_cores**: solver thread count (default 4).
 
     .. deprecated::
-        ``build_comsol_model`` is JTWPA-specific. For a different device
+        ``build_comsol_model`` is tied to ONE device family (see tools/jtwpa/). For a different device
         (transmon, resonator, etc.) use ``run_custom_comsol_build`` instead.
     """
     ensure_contained(gds_path, arg="gds_path", tool="build_comsol_model")
-    return comsol.build_comsol_model(
+    return jtwpa_comsol.build_comsol_model(
         REGISTRY, gds_path, junction_inductance_ph, comsol_host,
         output_dir, geom_params, material_params, comsol_cores,
         build_only, dry_run, debug)
@@ -424,13 +428,13 @@ def run_stub_length_sweep(
     ``stub_length_sweep.dat`` consumed by the fitting tools.
 
     .. deprecated::
-        ``run_stub_length_sweep`` is JTWPA-specific. Use
+        ``run_stub_length_sweep`` is tied to ONE device family (see tools/jtwpa/). Use
         ``run_geometry_param_sweep(param_name='stub_length',
         study_type='frequency_domain', ...)`` for equivalent behavior
         with any COMSOL geometry parameter.
     """
     ensure_contained(mph_path, arg="mph_path", tool="run_stub_length_sweep")
-    return comsol.run_stub_length_sweep(
+    return jtwpa_comsol.run_stub_length_sweep(
         REGISTRY, mph_path, stub_lengths_um, freq_ghz, comsol_host,
         output_dir, comsol_cores, port, resume, dry_run, debug)
 
@@ -912,7 +916,7 @@ def run_abcd_fit(
         ensure_contained(data_path, arg="data_path", tool="run_abcd_fit")
     if output_dir is not None:
         ensure_contained(output_dir, arg="output_dir", tool="run_abcd_fit")
-    return fitting.run_abcd_fit(REGISTRY, data_path=data_path,
+    return jtwpa_fitting.run_abcd_fit(REGISTRY, data_path=data_path,
                                 output_dir=output_dir,
                                 stub_filter_um=stub_filter_um, debug=debug)
 
@@ -938,7 +942,7 @@ def run_abcd_fit_parallel(
         ensure_contained(data_path, arg="data_path", tool="run_abcd_fit_parallel")
     if output_dir is not None:
         ensure_contained(output_dir, arg="output_dir", tool="run_abcd_fit_parallel")
-    return fitting.run_abcd_fit_parallel(
+    return jtwpa_fitting.run_abcd_fit_parallel(
         REGISTRY, data_path=data_path, output_dir=output_dir,
         max_workers=max_workers, debug=debug)
 
@@ -982,10 +986,10 @@ def run_generic_fit(
 def fit_stub_sweep(debug: bool = False) -> Dict[str, Any]:
     """Fit a single Cg per stub via the Julia fitter (needs Julia env).
 
-    Returns a ``job_id``. Requires Julia + the project's JosephsonCircuits.jl
+    Returns a ``job_id``. Requires Julia + the vendored JosephsonCircuits.jl
     environment to be installed.
     """
-    return fitting.fit_stub_sweep(REGISTRY, debug=debug)
+    return jtwpa_fitting.fit_stub_sweep(REGISTRY, debug=debug)
 
 
 @mcp.tool()
@@ -994,7 +998,7 @@ def analyze_dispersion(debug: bool = False) -> Dict[str, Any]:
 
     Returns a ``job_id``. Requires the fit-results CSV from ``fit_stub_sweep``.
     """
-    return fitting.analyze_dispersion(REGISTRY, debug=debug)
+    return jtwpa_fitting.analyze_dispersion(REGISTRY, debug=debug)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -13,7 +13,9 @@ import csv
 
 from comsol_suite.config import load_config
 from comsol_suite.jobs import JobRegistry
-from comsol_suite.tools.fitting import run_abcd_fit, run_abcd_fit_parallel, run_generic_fit
+from comsol_suite.tools.fitting import run_generic_fit
+# JTWPA-specific since 2026-08-04 — see comsol_suite/tools/jtwpa/__init__.py
+from comsol_suite.tools.jtwpa.fitting import run_abcd_fit, run_abcd_fit_parallel
 from conftest import requires
 
 
