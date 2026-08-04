@@ -52,6 +52,57 @@ def _factory_tools() -> Path:
     return _factory_home() / "tools"
 
 
+#: One path segment of the record tree: letters, digits, underscore, hyphen.
+#: Deliberately NOT the scope grammar itself — the tiles and letters come from
+#: the active design and must not be hardcoded here. This is the containment
+#: check, which is a different question from "is this a scope that exists": a
+#: name that gets past it and does not exist still yields an ordinary not-found.
+_SEGMENT_OK = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+
+
+def _safe_segment(kind: str, value: str) -> str:
+    """One model-supplied path segment, or a refusal.
+
+    `phase` and `scope` are joined straight into a filesystem path, and they come
+    from a language model. Measured against Qwen/Qwen3.6-27B-FP8: asked about
+    tile U0_R0 it sent ``scope="tile U0_R0"`` in 2 of 3 runs, so a malformed
+    segment is the ordinary case rather than an adversarial one.
+
+    Two things this stops. A segment containing ``..`` or a separator escapes the
+    record tree entirely; and a segment that escaped the REPO root then made the
+    error branch itself raise, because ``Path.relative_to`` throws ValueError on
+    a path outside its argument — so a typo returned an uncaught traceback
+    instead of an error dict.
+    """
+    text = str(value)
+    if not text or not set(text) <= _SEGMENT_OK:
+        raise _ScopeRefused(
+            f"{kind} {value!r} is not a single record-tree name. Expected one "
+            f"segment of letters, digits, '_' or '-' — e.g. phase 'F2', scope "
+            f"'chip', a tile 'U0_R0' or a qubit 'U0_R0_A'. Call "
+            f"qleap_factory_status to see which scopes exist."
+        )
+    return text
+
+
+class _ScopeRefused(ValueError):
+    """A model-supplied phase/scope that must not reach the filesystem."""
+
+
+def _display(path: Path) -> str:
+    """Repo-relative when it can be, absolute when it cannot.
+
+    `Path.relative_to` raises ValueError for anything outside its argument, and
+    this is called from an ERROR branch — so the old unconditional call turned a
+    bad path into an uncaught traceback while trying to report it.
+    """
+    try:
+        return str(path.relative_to(_repo_root()))
+    except ValueError:
+        return str(path)
+
+
 def _cli_argv(script: Path, args: list[str]) -> list[str]:
     """Run a control-plane CLI with THIS interpreter, not through ``uv run``.
 
@@ -155,11 +206,17 @@ def qleap_factory_record(phase: str, scope: str) -> Dict[str, Any]:
     reports, any caveats, the human sign-offs, and the record hash that chains it
     to its work order.
     """
+    try:
+        phase = _safe_segment("phase", phase)
+        scope = _safe_segment("scope", scope)
+    except _ScopeRefused as exc:
+        return {"ok": False, "error": str(exc)}
+
     path = _factory_home() / "records" / phase / scope / "accepted.json"
     if not path.is_file():
         return {
             "ok": False,
-            "error": f"no acceptance record at {path.relative_to(_repo_root())}",
+            "error": f"no acceptance record at {_display(path)}",
             "hint": "call qleap_factory_status first to see which scopes have one",
         }
     try:
