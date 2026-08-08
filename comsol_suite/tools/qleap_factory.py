@@ -45,7 +45,9 @@ drive the line".
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -388,3 +390,164 @@ def qleap_f2_gauntlet(tile: str, only: str | None = None, letters: str | None = 
     return _run_json(
         "qleap_f2_gauntlet", _cli_argv(script, args),
         timeout_s=_GAUNTLET_SOLVE_TIMEOUT_S if solve else 600)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The NEW line (QubitDesignPipeline/NewPipeline): plan it, and launch it
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _new_line_tools() -> Path:
+    return _repo_root() / "QubitDesignPipeline" / "NewPipeline" / "tools"
+
+
+#: An executing line walks seventeen blocks, several of which take a COMSOL slot
+#: and solve. The same ceiling the F2 gauntlet books, for the same reason: below
+#: it a legitimate overnight run gets SIGKILLed and reports as a tool failure.
+_LINE_EXECUTE_TIMEOUT_S = _GAUNTLET_SOLVE_TIMEOUT_S
+
+#: A dry run resolves the whole plan — every role, every tolerance, every
+#: adapter — over SMB. The tool's own declared budget is 60 s; this is the
+#: ceiling, generous against a cold share.
+_LINE_PLAN_TIMEOUT_S = 900
+
+#: What ``execute_line.py`` stamps on the document it writes. Read back so this
+#: wrapper can never present some other JSON file as an execute report.
+_LINE_REPORT_SCHEMA = "line-execute-report-1.0"
+
+
+def _line_report_dir() -> Path:
+    return _factory_home() / "line_runs"
+
+
+def _read_line_report(path: Path, existed_ns: int | None):
+    """The execute report, read from the FILE the driver wrote.
+
+    Returns ``(parsed, parse_error)``.
+
+    NOT from the log tail, and that difference is the whole point of this
+    function. Every other tool in this module parses ``res.log_tail(4000)`` with
+    :func:`extract_trailing_json`, which is right for documents that fit. This
+    one does not: a DRY RUN of ``execute_line.py --json`` for the active design
+    already prints 3048 lines, 2489 of them the plan, and an EXECUTING report
+    adds the runner's own report — which carries every step record twice
+    (``steps`` and ``by_block``) with inputs, tolerances, notes and problems.
+
+    Truncation there does not raise. Measured on the real output cut to its last
+    2000 lines, ``extract_trailing_json`` returned ``({'letter': 'A', 'tile':
+    'U0_R0'}, None)`` — a NESTED FRAGMENT with ``parse_error=None``. The tool's
+    own docstring tells the reader to trust ``parsed.sealed``,
+    ``parsed.confessions`` and ``parsed.reached_runner``; on a fragment all
+    three are simply absent, which reads as "nothing confessed". That is a pill
+    that looks right while being untrue.
+
+    The driver already writes the report atomically to a path this wrapper
+    chooses, so the document is read whole from disk instead. Three refusals,
+    each returning a stated ``parse_error`` rather than a silent ``None``:
+
+    * the file is not there — the driver died before writing it;
+    * the file is there but is the one that was already there (unchanged
+      ``st_mtime_ns``), so it is a STALE report from an earlier run and not
+      evidence about this one;
+    * the document does not declare ``schema_version`` ``line-execute-report-1.0``,
+      so it is not an execute report at all.
+    """
+    if not path.is_file():
+        return None, (
+            f"the driver wrote no execute report at {_display(path)} — "
+            f"read the log for why it stopped")
+    stat_ns = path.stat().st_mtime_ns
+    if existed_ns is not None and stat_ns == existed_ns:
+        return None, (
+            f"{_display(path)} is unchanged since before this call: it is a "
+            f"STALE report from an earlier run, not evidence about this one")
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return None, f"could not read {_display(path)}: {error}"
+    if not isinstance(parsed, dict):
+        return None, (
+            f"{_display(path)} holds a {type(parsed).__name__}, not an execute "
+            f"report object")
+    declared = parsed.get("schema_version")
+    if declared != _LINE_REPORT_SCHEMA:
+        return None, (
+            f"{_display(path)} declares schema_version {declared!r}, not "
+            f"{_LINE_REPORT_SCHEMA!r} — this is not an execute report")
+    return parsed, None
+
+
+def qleap_line_execute(dry_run: bool = True, design: str | None = None,
+                       tile: str | None = None, letter: str | None = None,
+                       force: bool = False,
+                       run_id: str | None = None,
+                       out: str | None = None) -> Dict[str, Any]:
+    """Drive the NEW line: resolve the plan and, unless ``dry_run``, RUN it.
+
+    Wraps ``QubitDesignPipeline/NewPipeline/tools/execute_line.py``, which is the
+    only caller of ``linespec.runner.Runner.run``. See that module's docstring
+    for the refusal rule; the short version is that a plan with any blocking
+    problem is refused and the runner is never reached, which today is the
+    ordinary outcome for the active design.
+
+    ``dry_run`` DEFAULTS TO TRUE and is the FIRST argument deliberately: it is
+    the argument ``agent/policy.py``'s ``_leaves_dry_run`` reads, and a tool that
+    can spend solver time without it would be launchable from the chat pane with
+    no human approval at all.
+
+    ``parsed`` is read from the report FILE, never from the log tail — see
+    :func:`_read_line_report` for the measurement that forced that.
+
+    ``run_id`` names the run (a campaign name like ``ChipReconstruction002``);
+    it is passed through as ``--run-id`` and changes nothing about what runs.
+    A refused or dry run still reports ``run_id`` null — the name is not
+    evidence the run happened.
+    """
+    script = _new_line_tools() / "execute_line.py"
+    if not script.is_file():
+        return {"ok": False, "error": f"no line driver at {_display(script)}"}
+
+    # The report path is always ours to name, whether or not the caller gave
+    # one: the document is what this tool returns, so it may not depend on the
+    # driver's default landing place being guessable from here.
+    if out:
+        report_path = Path(out)
+    else:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        report_path = _line_report_dir() / f"execute_{stamp}_{os.getpid()}.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    existed_ns = report_path.stat().st_mtime_ns if report_path.is_file() else None
+
+    args = ["--out", str(report_path)]
+    args.append("--dry-run" if dry_run else "--execute")
+    if design:
+        args += ["--design", design]
+    if tile:
+        args += ["--tile", tile]
+    if letter:
+        args += ["--letter", letter]
+    if force:
+        args.append("--force")
+    if run_id:
+        args += ["--run-id", run_id]
+
+    # This interpreter, not `uv run`: this venv already carries mph and numpy,
+    # and uv's environment resolution over SMB added 140+ s to a 37 s script
+    # here once already (see `_cli_argv`). The blocks the runner dispatches
+    # build their own environments where they need one.
+    timeout_s = _LINE_PLAN_TIMEOUT_S if dry_run else _LINE_EXECUTE_TIMEOUT_S
+    log_path = new_log_path(_factory_home() / "logs", "qleap_line_execute")
+    res = run_command(_cli_argv(script, args), log_path=log_path,
+                      cwd=_repo_root(), timeout_s=timeout_s)
+    update_last_log_pointer(log_path, "qleap_line_execute")
+    parsed, parse_error = _read_line_report(report_path, existed_ns)
+    return {
+        # `ok` is the PROCESS's health, not the line's verdict. rc is advisory
+        # in both directions here (I4); `parsed.sealed` is the verdict.
+        "ok": res.ok,
+        "returncode": res.returncode,
+        "log_path": str(log_path),
+        "report_path": str(report_path),
+        "parsed": parsed,
+        "parse_error": parse_error,
+        "log_tail": None if parsed is not None else res.log_tail(40),
+    }

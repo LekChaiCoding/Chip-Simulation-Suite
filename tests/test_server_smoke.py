@@ -99,6 +99,11 @@ def test_tools_register_on_server():
         # Until it existed the agent could read the line's plan and its record
         # chain but had no way to execute a station.
         "qleap_f2_gauntlet",
+        # The one that LAUNCHES the new design-agnostic line (added 2026-08-08).
+        # Its own registration re-committed the omission the note above records,
+        # in the file that records it: the tool was added to server.py and not
+        # to this set, so the suite reported it as "unexpected" on every run.
+        "qleap_line_execute",
     }
     missing = expected - names
     assert not missing, f"tools not registered: {missing}"

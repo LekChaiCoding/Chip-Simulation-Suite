@@ -1723,6 +1723,61 @@ def qleap_factory_record(phase: str, scope: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
+def qleap_line_execute(dry_run: bool = True, design: Optional[str] = None,
+                       tile: Optional[str] = None, letter: Optional[str] = None,
+                       force: bool = False,
+                       run_id: Optional[str] = None,
+                       out: Optional[str] = None) -> Dict[str, Any]:
+    """LAUNCH the new design-agnostic line (QubitDesignPipeline/NewPipeline).
+
+    This is the only tool that can make the line SPEND SOLVER TIME. It wraps
+    ``NewPipeline/tools/execute_line.py``, which resolves the whole plan first
+    and calls ``linespec.runner.Runner.run`` only if that plan is CLEAN. A plan
+    with any blocking problem — an input no record produces, a tolerance with no
+    provenance, an adapter that will not resolve — is refused and the runner is
+    never reached. Today that is the ordinary outcome for the active design, and
+    it is the safe one.
+
+    ``dry_run`` DEFAULTS TO TRUE: resolve and print the plan, execute nothing,
+    take no COMSOL slot. Passing ``dry_run=false`` is what requires a human
+    approval, and the approval is keyed on this tool's NAME on this MCP surface
+    (``agent/policy.py``'s ``build_interrupt_on``), which is why the launch path
+    is a tool and not an HTTP route. Two independent layers apply, in this order:
+    ``interrupt_on`` is an ``after_model`` hook and fires when the model PROPOSES
+    the call; ``PhaseGateMiddleware`` is a ``wrap_tool_call`` and fires when the
+    tool would EXECUTE, failing closed on its own. A route would inherit neither.
+
+    ``force`` executes over a plan that does not resolve. It buys less than it
+    looks like: the runner re-plans each block immediately before deciding about
+    it and still refuses any block with problems of its own. What it does buy is
+    a CONFESSION — a forced run can never report ``sealed``.
+
+    Read the ``parsed`` document, not the return code: ``rc`` is advisory in both
+    directions here as everywhere on this line (invariant I4). ``parsed.sealed``,
+    ``parsed.confessions`` and ``parsed.reached_runner`` are the verdict.
+
+    ``parsed`` is the report FILE, read whole from ``report_path`` — not a parse
+    of the log tail, which truncates this document and returns a nested fragment
+    on which those three fields are simply absent. When it cannot be read,
+    ``parsed`` is null and ``parse_error`` says why; null never means "clean".
+
+    ``out`` redirects the execute report; it must stay inside the containment
+    root. ``design`` defaults to ``simulations/_designs/active.txt``, read and
+    never guessed; ``tile``/``letter`` pick which unit of the roster is resolved.
+
+    ``run_id`` names the run — a campaign name like ``ChipReconstruction002``
+    flows into the run report, every sealed record's verdict and every
+    quarantine reason. It changes nothing about what runs, and a refused or
+    dry run still reports ``run_id`` null: a name is not evidence.
+    """
+    if out is not None:
+        ensure_contained(out, arg="out", tool="qleap_line_execute")
+    return qleap_factory.qleap_line_execute(
+        dry_run=dry_run, design=design, tile=tile, letter=letter,
+        force=force, run_id=run_id, out=out)
+
+
+@mcp.tool()
 def qleap_f2_gauntlet(tile: str, only: str | None = None,
                       letters: str | None = None, dry_run: bool = True,
                       solve: bool = False, force: bool = False) -> Dict[str, Any]:
