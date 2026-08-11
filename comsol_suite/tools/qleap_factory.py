@@ -551,3 +551,201 @@ def qleap_line_execute(dry_run: bool = True, design: str | None = None,
         "parse_error": parse_error,
         "log_tail": None if parsed is not None else res.log_tail(40),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The NEW line, read back: the record tree qleap_line_execute writes into
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: The payload shapes ``line_status.py`` emits, mirrored from that script's own
+#: ``WHAT`` tuple (stated once there so its help, choices and dispatch cannot
+#: drift apart). This copy exists only to refuse a bad value with a usable
+#: message BEFORE spawning a subprocess whose argparse would print usage text
+#: instead of JSON — and if it goes stale the failure is a stated refusal
+#: naming both lists, never a silent wrong answer.
+_LINE_STATUS_WHAT = ("status", "line", "steps")
+
+#: A status read walks the record tree over SMB and solves nothing. Measured on
+#: the live hex_low_freq_v2 tree 2026-08-12: ``--what status`` 1.9 s, ``--what
+#: steps`` 1.3 s. The ceiling is generous against a cold share for the same
+#: reason ``_LINE_PLAN_TIMEOUT_S`` is, and sits far below it: nothing here
+#: resolves a plan, let alone runs one.
+_LINE_STATUS_TIMEOUT_S = 300
+
+#: The variable ``linespec.serve.line_home()`` reads. Spelled here rather than
+#: imported: pulling ``linespec`` (and through it ``qleapsim``) into the server
+#: process for one string buys nothing, and a drift here cannot be silent — a
+#: wrongly-named variable leaves the child's own refusal in force, and that
+#: refusal names the variable it actually wanted.
+_LINE_HOME_ENV = "CHIPPY_LINE_HOME"
+
+
+def _run_whole_log_json(tool: str, argv: list[str], timeout_s: float,
+                        env: Dict[str, str] | None = None) -> Dict[str, Any]:
+    """Run one of the new line's CLIs and parse its JSON from the WHOLE log.
+
+    Like :func:`_run_json` except for where the parse looks. ``_run_json``
+    parses ``res.log_tail(4000)``, which is right for the factory-status
+    documents it serves and wrong here for the reason :func:`_read_line_report`
+    measures: a truncated tail does not raise, it returns a NESTED FRAGMENT
+    with ``parse_error=None`` — a pill that looks right while being untrue.
+    ``line_status.py`` has no ``--out``, so unlike the execute report there is
+    no separate file to read back whole; the complete document is recovered by
+    reading the complete log instead. The ``steps`` payload is 619 lines on the
+    live tree today and grows with every block the walk records, so "the tail
+    is surely enough" is exactly the declaration nobody would re-check.
+
+    One shape ``_run_json`` never sees: a STATED REFUSAL. ``line_status.py``
+    exits 1 with ``{code, message}`` on stderr (merged into the log by
+    ``run_command``) when it cannot serve — ``$CHIPPY_LINE_HOME`` undeclared,
+    the design has no contract. That document parses fine and is returned in
+    ``parsed``; ``returncode`` 0 is what says ``parsed`` is a payload rather
+    than a refusal, and ``ok`` is already false on the refusal path.
+    """
+    log_path = new_log_path(_factory_home() / "logs", tool)
+    res = run_command(argv, log_path=log_path, cwd=_repo_root(),
+                      timeout_s=timeout_s, env=env)
+    update_last_log_pointer(log_path, tool)
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        return {
+            "ok": False,
+            "returncode": res.returncode,
+            "log_path": str(log_path),
+            "parsed": None,
+            "parse_error": f"could not read {_display(log_path)}: {error}",
+            "log_tail": None,
+        }
+    parsed, parse_error = extract_trailing_json(text)
+    return {
+        "ok": res.ok,
+        "returncode": res.returncode,
+        "log_path": str(log_path),
+        "parsed": parsed,
+        "parse_error": parse_error,
+        "log_tail": None if parsed is not None else res.log_tail(40),
+    }
+
+
+def _line_home_env(design: str | None, script: Path):
+    """The child's environment, with ``$CHIPPY_LINE_HOME`` filled in when the
+    server's own is empty.
+
+    Returns ``(env, refusal)``: ``env`` of ``None`` means inherit the parent's
+    environment unchanged; a non-``None`` ``refusal`` is a finished tool result
+    to return as-is.
+
+    ``linespec.serve.line_home()`` refuses to default on purpose — guessing a
+    directory would be a declaration with nothing behind it. This wrapper is
+    not guessing: its sibling ``qleap_line_execute`` launches runs whose
+    records land at ``simulations/_line/<design_id>`` — the landing place
+    ``execute_line.py`` itself anchors to (``linespec.runner.line_state_root``)
+    — so pointing the read at the tree the launch surface writes is reading a
+    declaration back. An operator who set ``$CHIPPY_LINE_HOME`` has declared a
+    tree explicitly and is honoured over the derivation, unconditionally.
+
+    When no design was named, the id is resolved by ``line_status.py
+    --resolve-design`` in a subprocess — the ONE implementation of the
+    ``$CHIPPY_ACTIVE_DESIGN`` → ``active.txt`` → registry precedence — never by
+    a second copy of that precedence here. The script's own docstring records
+    where two implementations of it already disagreed once.
+    """
+    if os.environ.get(_LINE_HOME_ENV, "").strip():
+        return None, None  # the operator declared the tree; inherit it
+
+    if design is None:
+        res = _run_whole_log_json(
+            "qleap_line_status", _cli_argv(script, ["--resolve-design"]),
+            timeout_s=120)
+        parsed = res.get("parsed")
+        resolved = parsed.get("design_id") if isinstance(parsed, dict) else None
+        if not (isinstance(resolved, str) and resolved):
+            res["ok"] = False
+            res["error"] = (
+                "could not resolve the active design (line_status.py "
+                "--resolve-design), so the record tree cannot be derived — "
+                f"set ${_LINE_HOME_ENV} or pass design explicitly")
+            return None, res
+        design = resolved
+
+    # The resolved id is joined into a filesystem path, so it passes the same
+    # containment check a model-supplied one does. active.txt is hand-edited;
+    # a malformed line must refuse here, not escape the _line tree.
+    try:
+        design = _safe_segment("design", design)
+    except _ScopeRefused as exc:
+        return None, {"ok": False, "error": str(exc)}
+
+    env = dict(os.environ)
+    env[_LINE_HOME_ENV] = str(_repo_root() / "simulations" / "_line" / design)
+    return env, None
+
+
+def qleap_line_status(what: str = "status", design: str | None = None) -> Dict[str, Any]:
+    """The NEW line's state, read from the record tree the line writes.
+
+    Wraps ``QubitDesignPipeline/NewPipeline/tools/line_status.py`` — the same
+    ``linespec.serve`` adapters the web UI renders, emitting one frozen
+    ``/api/factory/*`` payload as JSON. This is the read half of
+    ``qleap_line_execute``: that tool spends solver time on the new line, this
+    one answers how it went, and until it existed an agent that had just
+    launched the line had NO tool that could read the result —
+    ``qleap_factory_status`` reads the OLD control plane at
+    ``simulations/_factory/``, while the new line records into
+    ``simulations/_line/<design>/``, so the launcher's own status question came
+    back "nothing happened". The exact tool-gap species this module's docstring
+    opens with, one line over.
+
+    ``what``   which payload: ``"status"`` (cross-phase rollup: accepted
+               scopes, andons, embargoes), ``"line"`` (the discovered block DAG
+               — reads no records, so it answers before a first run), or
+               ``"steps"`` (the DAG joined against the records: per-step
+               verdicts, gate reports, artifacts, durations).
+    ``design`` a design id like ``hex_low_freq_v2``; omit for the active design
+               (``$CHIPPY_ACTIVE_DESIGN``, then ``active.txt``, then the
+               registry default — resolved by the script, the one
+               implementation of that precedence).
+
+    The record tree is ``$CHIPPY_LINE_HOME`` when this server's environment
+    declares it; otherwise ``simulations/_line/<design>`` — the landing place
+    ``execute_line.py`` anchors runs at. See :func:`_line_home_env`.
+
+    Pure read: no solve, no COMSOL slot, and no ``dry_run`` by design. Exit
+    codes are process health, never a physics verdict (I4): with ``returncode``
+    0 ``parsed`` is the payload; with 1 it is the script's stated refusal
+    (``{code, message}``); ``parsed`` null never means "clean" — read
+    ``parse_error`` for why. The parse reads the COMPLETE log, never a tail
+    (:func:`_run_whole_log_json`).
+    """
+    script = _new_line_tools() / "line_status.py"
+    if not script.is_file():
+        return {"ok": False, "error": f"no line status tool at {_display(script)}"}
+
+    if what not in _LINE_STATUS_WHAT:
+        return {"ok": False,
+                "error": f"what {what!r} is not a payload line_status.py "
+                         f"emits. Choose one of: {list(_LINE_STATUS_WHAT)}"}
+    if design is not None:
+        try:
+            design = _safe_segment("design", design)
+        except _ScopeRefused as exc:
+            return {"ok": False, "error": str(exc)}
+
+    env, refusal = _line_home_env(design, script)
+    if refusal is not None:
+        return refusal
+
+    # `--json` is already the default and the only stdout format; passed anyway
+    # because the flag exists precisely so a caller can state the contract it
+    # depends on (line_status.py's own help says so).
+    args = ["--what", what, "--json"]
+    if design:
+        args += ["--design", design]
+
+    # This interpreter, not `uv run` — the measured trap on `_cli_argv`. The
+    # script needs only the stdlib plus linespec/qleapsim, which its own
+    # `_bootstrap` puts on the path.
+    return _run_whole_log_json(
+        "qleap_line_status", _cli_argv(script, args),
+        timeout_s=_LINE_STATUS_TIMEOUT_S, env=env)

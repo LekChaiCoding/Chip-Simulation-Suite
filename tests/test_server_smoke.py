@@ -104,6 +104,11 @@ def test_tools_register_on_server():
         # in the file that records it: the tool was added to server.py and not
         # to this set, so the suite reported it as "unexpected" on every run.
         "qleap_line_execute",
+        # ...and the one that READS the new line back (added 2026-08-12): the
+        # launch surface above had no read surface, so an agent that started a
+        # run could only ask qleap_factory_status — the OLD tree — and be told
+        # nothing happened.
+        "qleap_line_status",
     }
     missing = expected - names
     assert not missing, f"tools not registered: {missing}"

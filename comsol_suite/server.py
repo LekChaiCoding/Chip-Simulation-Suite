@@ -1778,6 +1778,56 @@ def qleap_line_execute(dry_run: bool = True, design: Optional[str] = None,
 
 
 @mcp.tool()
+def qleap_line_status(what: str = "status",
+                      design: Optional[str] = None) -> Dict[str, Any]:
+    """READ the new design-agnostic line's state (QubitDesignPipeline/NewPipeline).
+
+    The read half of ``qleap_line_execute``: that tool LAUNCHES the new line,
+    this one answers how it went. It wraps ``NewPipeline/tools/line_status.py``,
+    which serves the same frozen ``/api/factory/*`` payloads the web UI
+    renders, so the chat pane and the browser can never disagree about what the
+    line did. Pure read: no solve, no COMSOL slot, no ``dry_run``.
+
+    TWO LINES, TWO STATUS TOOLS — agents have grabbed the wrong one before:
+
+    * ``qleap_factory_status`` reads the OLD F0-F3 control plane at
+      ``simulations/_factory/`` — the shipped hex chip's record chain.
+    * ``qleap_line_status`` (this tool) reads the NEW line's tree at
+      ``simulations/_line/<design>/``. A run launched with
+      ``qleap_line_execute`` records HERE and writes nothing into
+      ``_factory/``, so asking ``qleap_factory_status`` about it reads the
+      wrong tree and reports that nothing happened.
+
+    ``what`` picks the payload:
+
+    * ``"status"`` — the cross-phase rollup: per-phase accepted scopes, open
+      andons and embargoes. The stage bar's document; ask this first.
+    * ``"line"`` — the DISCOVERED block DAG as ordered phases and steps. Reads
+      no records, so it answers even before a first run.
+    * ``"steps"`` — the DAG joined against the record tree: per-step verdicts,
+      gate reports, artifacts, durations. The largest, and the one that
+      answers "which block failed, and on what measurement".
+
+    ``design`` is a design id like ``hex_low_freq_v2``; omit it for the active
+    design (``$CHIPPY_ACTIVE_DESIGN``, then ``simulations/_designs/active.txt``,
+    then the registry default — resolved by the script itself, the one
+    implementation of that precedence). The record tree read is
+    ``$CHIPPY_LINE_HOME`` when this server's environment declares one, else
+    ``simulations/_line/<design>`` — the landing place ``execute_line.py``
+    itself anchors runs at.
+
+    Exit codes are process health, never a physics verdict (invariant I4): with
+    ``returncode`` 0, ``parsed`` is the payload; with 1 it is the script's own
+    stated refusal (``{code, message}`` — a design with no contract, an
+    undeclared record tree). A gate's outcome lives in the payload — a step's
+    ``verdict``, a scope's ``not_accepted`` — never in the return code. Null
+    ``parsed`` never means "clean"; ``parse_error`` says why it is null. The
+    document is parsed from the COMPLETE log, never a truncated tail.
+    """
+    return qleap_factory.qleap_line_status(what=what, design=design)
+
+
+@mcp.tool()
 def qleap_f2_gauntlet(tile: str, only: str | None = None,
                       letters: str | None = None, dry_run: bool = True,
                       solve: bool = False, force: bool = False) -> Dict[str, Any]:
