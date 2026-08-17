@@ -476,6 +476,49 @@ def _read_line_report(path: Path, existed_ns: int | None):
     return parsed, None
 
 
+def _mirror_report_to_runs(parsed: Dict[str, Any] | None,
+                           report_path: Path) -> str | None:
+    """Copy the execute report to the canonical ``<state_root>/runs/<run_id>.json``.
+
+    Measured gap (2026-08-14): this tool always names its own ``--out`` (the
+    document is what it returns), so ``ChipReconstruction008``'s report landed
+    ONLY under ``simulations/_factory/line_runs/`` — ``runs/ChipReconstruction
+    008.json`` never existed, and every reader of the canonical tree (the
+    scorecard, ``line_status``, a human at a shell) saw a walk with no report.
+    The fix keeps this tool's own copy AND lands the canonical one, derived
+    from the PARSED REPORT itself (its ``state_root`` and ``run_id``), so the
+    two trees cannot disagree about whether a run happened.
+
+    A report with no ``run_id`` (refused, dry) mirrors nothing — execute_line
+    reports ``run_id`` null for those on purpose, and a name is not evidence a
+    run happened. The write is temp+fsync+replace (the PLAYBOOK atomic-JSON
+    rule for this share). Failures are RETURNED as a string, never raised: the
+    primary report already exists, and losing IT over a mirror would invert
+    the priorities.
+    """
+    if not parsed:
+        return None
+    state_root = parsed.get("state_root")
+    run_id = parsed.get("run_id")
+    if not state_root or not run_id:
+        return None
+    try:
+        canonical = Path(str(state_root)) / "runs" / (str(run_id) + ".json")
+        if canonical.resolve() == report_path.resolve():
+            return str(canonical)
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        payload = report_path.read_bytes()
+        temp = canonical.with_name(canonical.name + ".tmp")
+        with open(temp, "wb") as sink:
+            sink.write(payload)
+            sink.flush()
+            os.fsync(sink.fileno())
+        os.replace(temp, canonical)
+        return str(canonical)
+    except OSError as exc:
+        return "MIRROR_FAILED: " + str(exc)
+
+
 def qleap_line_execute(dry_run: bool = True, design: str | None = None,
                        tile: str | None = None, letter: str | None = None,
                        force: bool = False,
@@ -547,6 +590,8 @@ def qleap_line_execute(dry_run: bool = True, design: str | None = None,
         "returncode": res.returncode,
         "log_path": str(log_path),
         "report_path": str(report_path),
+        # Where every OTHER reader of the line looks; see _mirror_report_to_runs.
+        "canonical_report_path": _mirror_report_to_runs(parsed, report_path),
         "parsed": parsed,
         "parse_error": parse_error,
         "log_tail": None if parsed is not None else res.log_tail(40),
