@@ -519,6 +519,149 @@ def _mirror_report_to_runs(parsed: Dict[str, Any] | None,
         return "MIRROR_FAILED: " + str(exc)
 
 
+#: The coupling gates this surface can run, and which of them takes a COMSOL
+#: slot. ``delta`` is deliberately ABSENT: ``measure_coupling_delta.py`` is its
+#: standing driver — real solves, ``--all --readback --seal``, and the producer of
+#: the three ``dialled_*`` roles the gate resolves — and a second entry point to
+#: one act is how two spellings of it drift apart.
+_COUPLING_GATES: Dict[str, bool] = {
+    "alpha": False,
+    "beta": False,
+    "gamma": True,      # opens one read-only mph session per unit
+    "epsilon": False,
+}
+
+#: Gamma's spot check loads a model per unit over SMB; the pure reads finish in
+#: seconds. Generous against a cold share, far below any solve ceiling.
+_COUPLING_GATE_TIMEOUT_S = 1800
+
+
+def qleap_coupling_gate(dry_run: bool = True, gate: str = "",
+                        design: str | None = None, tile: str | None = None,
+                        letter: str | None = None, run_id: str | None = None,
+                        seal: bool = False) -> Dict[str, Any]:
+    """Run ONE mid-walk coupling gate as the operator act it is.
+
+    The five coupling gates are library functions the runner never dispatches —
+    verified: no block and no runner code names them — so every mid-walk gate read
+    is an operator act. ``tools/run_coupling_gate.py`` gave that act a command
+    line; this gives it an agent-callable surface, which is what "Qwen can drive
+    the line end to end" actually requires. Before it existed, an agent could
+    spend solver time on seventeen blocks and then could not read a single gate.
+
+    It ADDS no judgement. The CLI builds the contract, record store and tolerance
+    table through ``run_line.assemble`` — the one construction planning and
+    execution already share — and passes the gate exactly ``(contract, records,
+    tolerances, scope, report_path)``. What the gate reads here is what the gate
+    would read for anyone.
+
+    ``dry_run`` DEFAULTS TO TRUE and resolves the act without performing it: which
+    gate, at which scope, whether it takes a COMSOL slot, and the argv that would
+    run. Nothing is launched and no slot is taken. That default is what
+    ``agent/policy.py``'s ``_leaves_dry_run`` reads, so **gamma** — the one gate
+    that opens an mph session — cannot run from the chat pane without a human
+    approval, while alpha, beta and epsilon stay what they are: pure reads.
+
+    ``seal`` is ALPHA ONLY, and the CLI enforces it rather than this wrapper:
+    gamma resolves a ``coupling_alpha_report`` record by role, and
+    ``measure_coupling_delta.py::seal_alpha_record`` is its producer. A measured
+    FAIL seals — it is the judgement B2_correct's disposition consumes — and an
+    UNMEASURED verdict refuses.
+
+    ``parsed`` is the gate's own report FILE, read from the path the tool itself
+    printed, never the stdout document and never the log tail (I4). ``ok`` is the
+    process's health; the verdict is ``parsed.pass``.
+    """
+    name = str(gate or "").strip().lower()
+    if name == "delta":
+        return {
+            "ok": False,
+            "error": (
+                "delta is not on this surface. tools/measure_coupling_delta.py is "
+                "its standing driver — it solves, and with --seal it is the only "
+                "producer of the three dialled_* roles the gate resolves. A second "
+                "entry point to one act is how two spellings of it drift apart."
+            ),
+            "gates_available": sorted(_COUPLING_GATES),
+        }
+    if name not in _COUPLING_GATES:
+        return {
+            "ok": False,
+            "error": f"unknown coupling gate {gate!r}",
+            "gates_available": sorted(_COUPLING_GATES),
+        }
+
+    script = _new_line_tools() / "run_coupling_gate.py"
+    if not script.is_file():
+        return {"ok": False, "error": f"no gate runner at {_display(script)}"}
+
+    args = [name]
+    if design:
+        args += ["--design", design]
+    if tile:
+        args += ["--tile", tile]
+    if letter:
+        args += ["--letter", letter]
+    if run_id:
+        args += ["--run-id", run_id]
+    if seal:
+        args.append("--seal")
+    args.append("--json")
+
+    takes_slot = _COUPLING_GATES[name]
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "gate": name,
+            "takes_comsol_slot": takes_slot,
+            "scope": {"design": design, "tile": tile, "letter": letter},
+            "seal": bool(seal),
+            "would_run": _cli_argv(script, args),
+            "note": (
+                "resolved only: nothing was launched and no COMSOL slot was taken. "
+                "Pass dry_run=false to read the gate for real"
+                + (" — this one opens an mph session per unit." if takes_slot else ".")
+            ),
+        }
+
+    log_path = new_log_path(_factory_home() / "logs", "qleap_coupling_gate")
+    res = run_command(_cli_argv(script, args), log_path=log_path,
+                      cwd=_repo_root(), timeout_s=_COUPLING_GATE_TIMEOUT_S)
+    update_last_log_pointer(log_path, "qleap_coupling_gate")
+
+    # WHERE the gate wrote, from the gate's own statement of it.
+    report_path = None
+    for line in (res.log_tail(4000) or "").splitlines():
+        if line.startswith("report: "):
+            report_path = line[len("report: "):].strip()
+    parsed, parse_error = None, None
+    if report_path:
+        target = Path(report_path)
+        try:
+            parsed = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            parse_error = f"{report_path} could not be read: {exc}"
+    else:
+        parse_error = (
+            "the gate runner printed no 'report: <path>' line, so the report file "
+            "it wrote cannot be identified. Read the log"
+        )
+    return {
+        # `ok` is the PROCESS's health. The verdict is parsed['pass'] (I4): rc 1
+        # here means the gate reported FAIL, which is a measured answer.
+        "ok": res.ok,
+        "returncode": res.returncode,
+        "gate": name,
+        "takes_comsol_slot": takes_slot,
+        "log_path": str(log_path),
+        "report_path": report_path,
+        "parsed": parsed,
+        "parse_error": parse_error,
+        "log_tail": None if parsed is not None else res.log_tail(40),
+    }
+
+
 def qleap_line_execute(dry_run: bool = True, design: str | None = None,
                        tile: str | None = None, letter: str | None = None,
                        force: bool = False,

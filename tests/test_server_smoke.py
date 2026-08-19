@@ -109,6 +109,14 @@ def test_tools_register_on_server():
         # run could only ask qleap_factory_status — the OLD tree — and be told
         # nothing happened.
         "qleap_line_status",
+        # ...and the one that READS A GATE (added 2026-08-19). The five coupling
+        # gates are library functions the runner never dispatches, so a gate read
+        # is an operator act: the agent could spend solver time on seventeen
+        # blocks and then not read a single gate, which is why "the gates have no
+        # callable surface" sat first on the Qwen-readiness blocker list. Added
+        # here in the same commit as the tool, which is what the note above this
+        # set exists to make happen.
+        "qleap_coupling_gate",
     }
     missing = expected - names
     assert not missing, f"tools not registered: {missing}"

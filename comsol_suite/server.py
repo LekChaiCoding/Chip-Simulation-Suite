@@ -1778,6 +1778,47 @@ def qleap_line_execute(dry_run: bool = True, design: Optional[str] = None,
 
 
 @mcp.tool()
+def qleap_coupling_gate(dry_run: bool = True, gate: str = "",
+                        design: Optional[str] = None,
+                        tile: Optional[str] = None,
+                        letter: Optional[str] = None,
+                        run_id: Optional[str] = None,
+                        seal: bool = False) -> Dict[str, Any]:
+    """Run ONE mid-walk coupling gate (alpha, beta, gamma, epsilon).
+
+    The gates are the line's cross-block judgements and the runner NEVER
+    dispatches them — no block and no runner code names them — so reading one is
+    an operator act. ``qleap_line_execute`` can spend solver time on seventeen
+    blocks; without this tool nothing on this surface could then read a single
+    gate, which is why "the gates have no callable surface" sat first on the
+    Qwen-readiness blocker list. It wraps ``NewPipeline/tools/run_coupling_gate.py``
+    and adds no judgement of its own.
+
+    ``dry_run`` DEFAULTS TO TRUE: it resolves which gate, at which scope, whether
+    that gate takes a COMSOL slot and the argv that would run, and launches
+    nothing. **gamma** opens one read-only ``mph`` session per unit, so it is the
+    reason this argument exists — ``agent/policy.py``'s ``_leaves_dry_run`` reads
+    it by name, so gamma cannot run from the chat pane without a human approval.
+    alpha, beta and epsilon are pure reads and say so in the dry-run answer.
+
+    ``delta`` is deliberately NOT available here: ``measure_coupling_delta.py`` is
+    its standing driver — it solves, and with ``--seal`` it is the only producer of
+    the three ``dialled_*`` roles delta resolves. Asking for it returns a refusal
+    that names the right tool.
+
+    ``seal`` is alpha-only and the CLI enforces it: gamma resolves alpha's record
+    by role, so alpha is the one gate whose judgement a later gate reads.
+
+    Read ``parsed``, not the return code (I4). ``parsed`` is the gate's own report
+    FILE, read from the path the tool printed; rc 1 means the gate reported FAIL,
+    which is a measured answer and not a tool failure.
+    """
+    return qleap_factory.qleap_coupling_gate(
+        dry_run=dry_run, gate=gate, design=design, tile=tile, letter=letter,
+        run_id=run_id, seal=seal)
+
+
+@mcp.tool()
 def qleap_line_status(what: str = "status",
                       design: Optional[str] = None) -> Dict[str, Any]:
     """READ the new design-agnostic line's state (QubitDesignPipeline/NewPipeline).
